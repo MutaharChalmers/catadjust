@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "catadjust"
-version = "0.1.0"
+version = "0.1.1"
 description = "Adjustment tools for catastrophe models"
 authors = [
            { name = "Mutahar Chalmers", email = "mutahar.chalmers@gmail.com" },

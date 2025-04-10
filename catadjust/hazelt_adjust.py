@@ -32,7 +32,8 @@ class HazardELTAdjustment:
         elt = elt_raw.astype({loccol: np.int64, eventcol: np.int64,
                               ratecol: np.float64, hazcol: np.float64}
                             ).drop_duplicates([loccol, eventcol]
-                                             ).sort_values([loccol, hazcol], ascending=[True, False])
+                                             ).sort_values([loccol, hazcol],
+                                                           ascending=[True, False]).dropna()
         self.loccol = loccol
         self.eventcol = eventcol
         self.ratecol = ratecol
@@ -97,12 +98,19 @@ class HazardELTAdjustment:
             Learning curve.
         """
 
+        eefs_targ = np.array(eefs_targ)
+
+        # Best initial guess for adjusted rates
         if x0 is None:
-            x0 = self.elt.groupby(self.eventcol)[self.ratecol].mean().values
+            eefs_loc = np.split(eefs_targ, self.loc_slicers[1:,0])
+            rates0 = np.concatenate([np.r_[eef_loc[0], np.diff(eef_loc)]
+                                     for eef_loc in eefs_loc])
+            x0 = np.array(pd.DataFrame({self.eventcol: self.elt[self.eventcol].values,
+                                        self.ratecol : rates0}
+                                      ).groupby(self.eventcol)[self.ratecol].mean())
         else:
             x0 = np.array(x0)
 
-        eefs_targ = np.array(eefs_targ)
         args = (eefs_targ,)
         res, fs = self._adam(self._cost, x0, args, alpha=alpha, niter=niter, tol=tol, amin=min_rate)
         elt_adj = self.elt.copy()
