@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "catadjust"
+version = "0.1.0"
+description = "Adjustment tools for catastrophe models"
+authors = [
+           { name = "Mutahar Chalmers", email = "mutahar.chalmers@gmail.com" },
+]
+license = { file = "LICENSE" }
+readme = "README.md"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: GIS",
+]
+requires-python = ">=3.8"
+dependencies = [
+  "numpy>=1.24", "pandas>=2.0"
+]
+
+[project.urls]
+"Homepage" = "https://github.com/MutaharChalmers/catadjust"
