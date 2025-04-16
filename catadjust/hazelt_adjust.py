@@ -69,7 +69,8 @@ class HazardELTAdjustment:
         elt['eef'] = elt.groupby(self.loccol, sort=False)[self.ratecol].transform(np.cumsum)
         return elt
 
-    def adjust(self, eefs_targ, x0=None, min_rate=1e-12, tol=1e-4, niter=1000, alpha=0.001):
+    def adjust(self, eefs_targ, x0=None, min_rate=1e-6, alpha=1e-4, niter=100,
+               ftol=1e-3, xtol=1e-6, relative=True, wts=None):
         """Adjust ELT to match location-level hazard curves.
 
         Parameters
@@ -80,13 +81,21 @@ class HazardELTAdjustment:
             Initial guess to use for rate adjustment.
         min_rate : float, optional
             Minimum allowable rate constraint.
-        tol : float, optional
-            Convergence criterion for cost function. Iteration stops
-            once the cost function (mean square error) is less than this value.
-        niter : int, optional
-            Maximum number of iterations.
         alpha : float, optional
             Learning rate in Adam gradient descent algorithm.
+        niter : int, optional
+            Maximum number of iterations.
+        ftol : float, optional
+            Convergence criterion for cost function. Stop once the absolute
+            value of the cost function is less than this.
+        xtol : float, optional
+            Convergence criterion for values. Stop once the mean absolute
+            change in x between successive iterations is less than this.
+        relative : bool, optional
+            Use relative (percentage) error in cost function.
+        wts : ndarray, optional
+            User-defined weights to apply to each location-event. By default,
+            locations are equally weighted.
 
         Returns
         -------
@@ -103,23 +112,28 @@ class HazardELTAdjustment:
         # Best initial guess for adjusted rates
         if x0 is None:
             eefs_loc = np.split(eefs_targ, self.loc_slicers[1:,0])
-            rates0 = np.concatenate([np.r_[eef_loc[0], np.diff(eef_loc)]
-                                     for eef_loc in eefs_loc])
-            x0 = np.array(pd.DataFrame({self.eventcol: self.elt[self.eventcol].values,
-                                        self.ratecol : rates0}
-                                      ).groupby(self.eventcol)[self.ratecol].mean())
+            rates0 = np.concatenate([np.r_[eef_loc[0], np.diff(eef_loc)] for eef_loc in eefs_loc])
+            x0 = np.array(pd.DataFrame({self.eventcol: self.elt[self.eventcol].values, self.ratecol: rates0}
+                                       ).groupby(self.eventcol)[self.ratecol].mean())
         else:
             x0 = np.array(x0)
 
+        if wts is None:
+            self.wts = np.ones_like(eefs_targ)
+        else:
+            self.wts = wts
+
         args = (eefs_targ,)
-        res, fs = self._adam(self._cost, x0, args, alpha=alpha, niter=niter, tol=tol, amin=min_rate)
+        cost = self._cost_rel if relative else self._cost_abs
+        res, fs = self._adam(cost, x0, args, alpha=alpha, niter=niter, ftol=ftol, xtol=xtol, amin=min_rate)
         elt_adj = self.elt.copy()
         elt_adj[self.ratecol] = res['x'][self.loceventixs]
         elt_adj = self.calc_eef(elt_adj)
         return elt_adj, res, fs
 
-    def _cost(self, theta, eefs_targ):
-        """Cost function for fitting an ELT to a target EEF by adjusting event rates.
+    def _cost_rel(self, theta, eefs_targ):
+        """Cost function for fitting an ELT to a target EEF by adjusting
+        event rates. Cost function is based on relative (percentage) errors.
 
         Parameters
         ----------
@@ -146,18 +160,57 @@ class HazardELTAdjustment:
             eefs_pred[a:b] = rates[a:b].cumsum()
 
         # Calculate deltas and cost function for current parameters
-        deltas = eefs_pred - eefs_targ
-        cost = (deltas**2).mean()
+        deltas = ((eefs_pred/eefs_targ) - 1)
+        cost = (self.wts * deltas**2).mean()
 
         # Calculate gradient of cost function wrt to event rates
         grad_cost = np.zeros_like(theta)
         for a, b in self.loc_slicers:
-            grad_cost[self.loceventixs[a:b]] += deltas[a:b][::-1].cumsum()[::-1]
+            grad_cost[self.loceventixs[a:b]] += deltas[a:b][::-1].cumsum()[::-1]*self.wts[a:b]/eefs_targ[a:b]
+
+        return cost, 2*grad_cost/deltas.size
+
+    def _cost_abs(self, theta, eefs_targ):
+        """Cost function for fitting an ELT to a target EEF by adjusting
+        event rates. Cost function is based on absolute errors.
+
+        Parameters
+        ----------
+        theta : ndarray
+            Rates to calculate cost function for, in unique eventID order.
+        eefs_targ : ndarray
+            Target EEFs for location-events in the same order as the
+            pre-processed ELT.
+
+        Returns
+        -------
+        cost : float
+            Cost function evaluated at theta.
+        cost_grad : ndarray
+            Gradient of cost function.
+        """
+
+        # Calculate EEFs for each location by chunked cumulative sums
+        eefs_pred = np.empty_like(eefs_targ)
+
+        # Expand event rates to event-location rates
+        rates = theta[self.loceventixs]
+        for a, b in self.loc_slicers:
+            eefs_pred[a:b] = rates[a:b].cumsum()
+
+        # Calculate deltas and cost function for current parameters
+        deltas = (eefs_pred - eefs_targ)
+        cost = (self.wts * deltas**2).mean()
+
+        # Calculate gradient of cost function wrt to event rates
+        grad_cost = np.zeros_like(theta)
+        for a, b in self.loc_slicers:
+            grad_cost[self.loceventixs[a:b]] += deltas[a:b][::-1].cumsum()[::-1]*self.wts[a:b]
 
         return cost, 2*grad_cost/deltas.size
 
     def _adam(self, fun, x0, args=(), alpha=0.001, beta1=0.9, beta2=0.999,
-              eps=1e-8, niter=1000, tol=1e-6, amin=-np.inf, amax=np.inf):
+              niter=1000, ftol=1e-6, xtol=1e-9, amin=-np.inf, amax=np.inf):
         """Adaptive Moment Estimation gradient descent with weight clipping.
 
         Parameters
@@ -174,9 +227,14 @@ class HazardELTAdjustment:
             Exponential decay rate for gradient momentum.
         beta2 : float, optional
             Exponential decay rate for gradient variance.
-        tol : float, optional
-            Convergence criterion for cost function. Iteration stops
-            once the cost function (mean square error) is less than this value.
+        niter : int, optional
+            Maximum number of iterations.
+        ftol : float, optional
+            Convergence criterion for cost function. Stop once the absolute
+            value of the cost function is less than this.
+        xtol : float, optional
+            Convergence criterion for values. Stop once the mean absolute
+            change in x between successive iterations is less than this.
         amin : float, optional
             Minimum value allowed for input values.
         amax : float, optional
@@ -184,10 +242,11 @@ class HazardELTAdjustment:
 
         Returns
         -------
-        cost : float
-            Cost function evaluated at theta.
-        cost_grad : ndarray
-            Gradient of cost function.
+        res : dict
+            Dictionary with final optimised values, cost function evaluation,
+            gradient and number of iterations.
+        fs : ndarray
+            Array of cost function evaluations at each iteration.
         """
 
         x, m, v = x0, 0, 0
@@ -197,9 +256,14 @@ class HazardELTAdjustment:
         for i in pbar:
             fs[i], grad = fun(x, *args)
 
-            pbar.set_description(f'f={fs[i]:.2e}{">" if fs[i] > tol else "<="}{tol:.2e}')
-            if fs[i] < tol:
-                return dict(x=x, fun=fs[i], jac=grad, nit=i), fs
+            # Convergence checks
+            if i >= 1:
+                dxa = np.abs(dx).mean()
+                ftol_msg = f'f={fs[i]:.2e}{">" if fs[i] > ftol else "<="}{ftol:.2e}'
+                xtol_msg = f'dx={dxa:.2e}{">" if dxa > xtol else "<="}{xtol:.2e}'
+                pbar.set_description(f'{ftol_msg} | {xtol_msg}')
+                if fs[i] < ftol or dxa < xtol:
+                    return dict(x=x, fun=fs[i], jac=grad, nit=i, dx=dxa), fs
 
             # Estimates of first and second moment of gradient
             m = (1 - beta1)*grad + beta1*m
@@ -210,11 +274,12 @@ class HazardELTAdjustment:
             vhat = v/(1 - beta2**(i+1))
 
             # Update step
-            x = x - alpha * mhat/(np.sqrt(vhat) + eps)
+            dx = alpha * mhat/(np.sqrt(vhat) + 1e-8)
+            x = x - dx
 
             # Weight clipping
             x = np.clip(x, amin, amax)
 
         f, grad = fun(x, *args)
         print('Warning: Iteration limit reached before cost function converged within tolerance')
-        return dict(x=x, fun=f, jac=grad, nit=i), fs
+        return dict(x=x, fun=f, jac=grad, nit=i, dx=dxa), fs
