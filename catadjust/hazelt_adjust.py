@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import numpy as np
+import numba as nb
 import pandas as pd
 from tqdm.auto import tqdm
 
@@ -70,7 +71,7 @@ class HazardELTAdjustment:
         return elt
 
     def adjust(self, eefs_targ, x0=None, min_rate=1e-6, alpha=1e-4, niter=100,
-               ftol=1e-3, xtol=1e-6, relative=True, wts=None):
+               ftol=1e-3, xtol=1e-6, relative=True, wts=None, use_numba=False):
         """Adjust ELT to match location-level hazard curves.
 
         Parameters
@@ -96,6 +97,8 @@ class HazardELTAdjustment:
         wts : ndarray, optional
             User-defined weights to apply to each location-event. By default,
             locations are equally weighted.
+        use_numba : boolean, optional
+            Whether to use numba for a ~50% speedup.
 
         Returns
         -------
@@ -123,8 +126,13 @@ class HazardELTAdjustment:
         else:
             self.wts = wts
 
-        args = (eefs_targ,)
-        cost = self._cost_rel if relative else self._cost_abs
+        if not use_numba:
+            args = (eefs_targ,)
+            cost = self._cost_rel if relative else self._cost_abs
+        else:
+            args = (eefs_targ, self.loceventixs, self.loc_slicers, self.wts)
+            cost = self._cost_rel_numba if relative else self._cost_abs_numba
+
         res, fs = self._adam(cost, x0, args, alpha=alpha, niter=niter, ftol=ftol, xtol=xtol, amin=min_rate)
         elt_adj = self.elt.copy()
         elt_adj[self.ratecol] = res['x'][self.loceventixs]
@@ -206,6 +214,88 @@ class HazardELTAdjustment:
         grad_cost = np.zeros_like(theta)
         for a, b in self.loc_slicers:
             grad_cost[self.loceventixs[a:b]] += deltas[a:b][::-1].cumsum()[::-1]*self.wts[a:b]
+
+        return cost, 2*grad_cost/deltas.size
+
+    @staticmethod
+    @nb.njit
+    def _cost_rel_numba(theta, eefs_targ, loceventixs, loc_slicers, wts):
+        """Cost function for fitting an ELT to a target EEF by adjusting
+        event rates. Cost function is based on relative (percentage) errors.
+
+        Parameters
+        ----------
+        theta : ndarray
+            Rates to calculate cost function for, in unique eventID order.
+        eefs_targ : ndarray
+            Target EEFs for location-events in the same order as the
+            pre-processed ELT.
+
+        Returns
+        -------
+        cost : float
+            Cost function evaluated at theta.
+        cost_grad : ndarray
+            Gradient of cost function.
+        """
+
+        # Calculate EEFs for each location by chunked cumulative sums
+        eefs_pred = np.empty_like(eefs_targ)
+
+        # Expand event rates to event-location rates
+        rates = theta[loceventixs]
+        for a, b in loc_slicers:
+            eefs_pred[a:b] = rates[a:b].cumsum()
+
+        # Calculate deltas and cost function for current parameters
+        deltas = ((eefs_pred/eefs_targ) - 1)
+        cost = (wts * deltas**2).mean()
+
+        # Calculate gradient of cost function wrt to event rates
+        grad_cost = np.zeros_like(theta)
+        for a, b in loc_slicers:
+            grad_cost[loceventixs[a:b]] += deltas[a:b][::-1].cumsum()[::-1]*wts[a:b]/eefs_targ[a:b]
+
+        return cost, 2*grad_cost/deltas.size
+
+    @staticmethod
+    @nb.njit
+    def _cost_abs_numba(theta, eefs_targ, loceventixs, loc_slicers, wts):
+        """Cost function for fitting an ELT to a target EEF by adjusting
+        event rates. Cost function is based on absolute errors.
+
+        Parameters
+        ----------
+        theta : ndarray
+            Rates to calculate cost function for, in unique eventID order.
+        eefs_targ : ndarray
+            Target EEFs for location-events in the same order as the
+            pre-processed ELT.
+
+        Returns
+        -------
+        cost : float
+            Cost function evaluated at theta.
+        cost_grad : ndarray
+            Gradient of cost function.
+        """
+
+        # Calculate EEFs for each location by chunked cumulative sums
+        eefs_pred = np.empty_like(eefs_targ)
+
+        # Expand event rates to event-location rates
+        rates = theta[loceventixs]
+        for a, b in loc_slicers:
+            eefs_pred[a:b] = rates[a:b].cumsum()
+
+        # Calculate deltas and cost function for current parameters
+        deltas = (eefs_pred - eefs_targ)
+        cost = (wts * deltas**2).mean()
+
+        # Calculate gradient of cost function wrt to event rates
+        grad_cost = np.zeros_like(theta)
+        for a, b in loc_slicers:
+            grad_cost[loceventixs[a:b]] += deltas[a:b][::-1].cumsum()[::-1]*wts[a:b]
 
         return cost, 2*grad_cost/deltas.size
 
