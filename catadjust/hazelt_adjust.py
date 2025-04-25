@@ -2,9 +2,14 @@
 # -*- coding: utf-8 -*-
 
 import numpy as np
-import numba as nb
 import pandas as pd
 from tqdm.auto import tqdm
+
+try:
+    import numba as nb
+    _use_numba = True
+except:
+    _use_numba = False
 
 
 class HazardELTAdjustment:
@@ -43,11 +48,11 @@ class HazardELTAdjustment:
         m = self.elt.shape[0]
 
         # Sorted array of unique eventIDs
-        eventIDs_unique = np.sort(self.elt[eventcol].unique())
-        self.nevents = eventIDs_unique.size
+        self.eventIDs = np.sort(self.elt[eventcol].unique())
+        self.nevents = self.eventIDs.size
 
         # Convert eventIDs in ELT to indices in event array
-        self.loceventixs = np.searchsorted(eventIDs_unique, self.elt[eventcol])
+        self.loceventixs = np.searchsorted(self.eventIDs, self.elt[eventcol])
 
         # Indices in ELT where location changes
         locbreaks = np.nonzero(np.diff(self.elt[loccol]))[0] + 1
@@ -71,7 +76,7 @@ class HazardELTAdjustment:
         return elt
 
     def adjust(self, eefs_targ, x0=None, min_rate=1e-6, alpha=1e-4, niter=100,
-               ftol=1e-3, xtol=1e-6, relative=True, wts=None, use_numba=False):
+               ftol=1e-3, xtol=1e-6, relative=True, wts=None, use_numba=_use_numba):
         """Adjust ELT to match location-level hazard curves.
 
         Parameters
@@ -98,7 +103,7 @@ class HazardELTAdjustment:
             User-defined weights to apply to each location-event. By default,
             locations are equally weighted.
         use_numba : boolean, optional
-            Whether to use numba for a ~50% speedup.
+            Whether to use numba for a ~50-100% speedup.
 
         Returns
         -------
@@ -134,9 +139,13 @@ class HazardELTAdjustment:
             cost = self._cost_rel_numba if relative else self._cost_abs_numba
 
         res, fs = self._adam(cost, x0, args, alpha=alpha, niter=niter, ftol=ftol, xtol=xtol, amin=min_rate)
+        self.theta = pd.Series(res['x'], index=pd.Index(self.eventIDs, name=self.eventcol))
         elt_adj = self.elt.copy()
         elt_adj[self.ratecol] = res['x'][self.loceventixs]
         elt_adj = self.calc_eef(elt_adj)
+        elt_adj['eef_targ'] = eefs_targ
+        elt_adj['delta'] = res['deltas']
+        elt_adj['wt'] = self.wts
         return elt_adj, res, fs
 
     def _cost_rel(self, theta, eefs_targ):
@@ -157,6 +166,8 @@ class HazardELTAdjustment:
             Cost function evaluated at theta.
         cost_grad : ndarray
             Gradient of cost function.
+        deltas : ndarray
+            Location-event differences.
         """
 
         # Calculate EEFs for each location by chunked cumulative sums
@@ -176,7 +187,7 @@ class HazardELTAdjustment:
         for a, b in self.loc_slicers:
             grad_cost[self.loceventixs[a:b]] += deltas[a:b][::-1].cumsum()[::-1]*self.wts[a:b]/eefs_targ[a:b]
 
-        return cost, 2*grad_cost/deltas.size
+        return cost, 2*grad_cost/deltas.size, deltas
 
     def _cost_abs(self, theta, eefs_targ):
         """Cost function for fitting an ELT to a target EEF by adjusting
@@ -196,6 +207,8 @@ class HazardELTAdjustment:
             Cost function evaluated at theta.
         cost_grad : ndarray
             Gradient of cost function.
+        deltas : ndarray
+            Location-event differences.
         """
 
         # Calculate EEFs for each location by chunked cumulative sums
@@ -215,10 +228,10 @@ class HazardELTAdjustment:
         for a, b in self.loc_slicers:
             grad_cost[self.loceventixs[a:b]] += deltas[a:b][::-1].cumsum()[::-1]*self.wts[a:b]
 
-        return cost, 2*grad_cost/deltas.size
+        return cost, 2*grad_cost/deltas.size, deltas
 
     @staticmethod
-    @nb.njit
+    @nb.njit('Tuple((float64,float64[:],float64[:]))(float64[:],float64[:],int64[:],int64[:,:],float64[:])')
     def _cost_rel_numba(theta, eefs_targ, loceventixs, loc_slicers, wts):
         """Cost function for fitting an ELT to a target EEF by adjusting
         event rates. Cost function is based on relative (percentage) errors.
@@ -237,6 +250,8 @@ class HazardELTAdjustment:
             Cost function evaluated at theta.
         cost_grad : ndarray
             Gradient of cost function.
+        deltas : ndarray
+            Location-event differences.
         """
 
         # Calculate EEFs for each location by chunked cumulative sums
@@ -256,10 +271,10 @@ class HazardELTAdjustment:
         for a, b in loc_slicers:
             grad_cost[loceventixs[a:b]] += deltas[a:b][::-1].cumsum()[::-1]*wts[a:b]/eefs_targ[a:b]
 
-        return cost, 2*grad_cost/deltas.size
+        return cost, 2*grad_cost/deltas.size, deltas
 
     @staticmethod
-    @nb.njit
+    @nb.njit('Tuple((float64,float64[:],float64[:]))(float64[:],float64[:],int64[:],int64[:,:],float64[:])')
     def _cost_abs_numba(theta, eefs_targ, loceventixs, loc_slicers, wts):
         """Cost function for fitting an ELT to a target EEF by adjusting
         event rates. Cost function is based on absolute errors.
@@ -278,6 +293,8 @@ class HazardELTAdjustment:
             Cost function evaluated at theta.
         cost_grad : ndarray
             Gradient of cost function.
+        deltas : ndarray
+            Location-event differences.
         """
 
         # Calculate EEFs for each location by chunked cumulative sums
@@ -297,7 +314,7 @@ class HazardELTAdjustment:
         for a, b in loc_slicers:
             grad_cost[loceventixs[a:b]] += deltas[a:b][::-1].cumsum()[::-1]*wts[a:b]
 
-        return cost, 2*grad_cost/deltas.size
+        return cost, 2*grad_cost/deltas.size, deltas
 
     def _adam(self, fun, x0, args=(), alpha=0.001, beta1=0.9, beta2=0.999,
               niter=1000, ftol=1e-6, xtol=1e-9, amin=-np.inf, amax=np.inf):
@@ -344,7 +361,7 @@ class HazardELTAdjustment:
 
         pbar = tqdm(range(niter))
         for i in pbar:
-            fs[i], grad = fun(x, *args)
+            fs[i], grad, deltas = fun(x, *args)
 
             # Convergence checks
             if i >= 1:
@@ -353,7 +370,7 @@ class HazardELTAdjustment:
                 xtol_msg = f'dx={dxa:.2e}{">" if dxa > xtol else "<="}{xtol:.2e}'
                 pbar.set_description(f'{ftol_msg} | {xtol_msg}')
                 if fs[i] < ftol or dxa < xtol:
-                    return dict(x=x, fun=fs[i], jac=grad, nit=i, dx=dxa), fs
+                    return dict(x=x, fun=fs[i], jac=grad, nit=i, dx=dxa, deltas=deltas), fs[fs>0]
 
             # Estimates of first and second moment of gradient
             m = (1 - beta1)*grad + beta1*m
@@ -370,6 +387,6 @@ class HazardELTAdjustment:
             # Weight clipping
             x = np.clip(x, amin, amax)
 
-        f, grad = fun(x, *args)
+        f, grad, deltas = fun(x, *args)
         print('Warning: Iteration limit reached before cost function converged within tolerance')
-        return dict(x=x, fun=f, jac=grad, nit=i, dx=dxa), fs
+        return dict(x=x, fun=f, jac=grad, nit=i, dx=dxa, deltas=deltas), fs[fs>0]
