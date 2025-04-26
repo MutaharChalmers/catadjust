@@ -115,7 +115,7 @@ class HazardELTAdjustment:
             Learning curve.
         """
 
-        eefs_targ = np.array(eefs_targ)
+        eefs_targ = np.array(eefs_targ, dtype=np.float64)
 
         # Best initial guess for adjusted rates
         if x0 is None:
@@ -124,12 +124,12 @@ class HazardELTAdjustment:
             x0 = np.array(pd.DataFrame({self.eventcol: self.elt[self.eventcol].values, self.ratecol: rates0}
                                        ).groupby(self.eventcol)[self.ratecol].mean())
         else:
-            x0 = np.array(x0)
+            x0 = np.array(x0, dtype=np.float64)
 
         if wts is None:
-            self.wts = np.ones_like(eefs_targ)
+            self.wts = np.ones_like(eefs_targ, dtype=np.float64)/eefs_targ.shape[0]
         else:
-            self.wts = wts
+            self.wts = np.array(wts, dtype=np.float64)/np.sum(wts)
 
         if not use_numba:
             args = (eefs_targ,)
@@ -180,14 +180,14 @@ class HazardELTAdjustment:
 
         # Calculate deltas and cost function for current parameters
         deltas = ((eefs_pred/eefs_targ) - 1)
-        cost = (self.wts * deltas**2).mean()
+        cost = (self.wts * deltas**2).sum()
 
         # Calculate gradient of cost function wrt to event rates
         grad_cost = np.zeros_like(theta)
         for a, b in self.loc_slicers:
             grad_cost[self.loceventixs[a:b]] += deltas[a:b][::-1].cumsum()[::-1]*self.wts[a:b]/eefs_targ[a:b]
 
-        return cost, 2*grad_cost/deltas.size, deltas
+        return cost, 2*grad_cost, deltas
 
     def _cost_abs(self, theta, eefs_targ):
         """Cost function for fitting an ELT to a target EEF by adjusting
@@ -221,14 +221,14 @@ class HazardELTAdjustment:
 
         # Calculate deltas and cost function for current parameters
         deltas = (eefs_pred - eefs_targ)
-        cost = (self.wts * deltas**2).mean()
+        cost = (self.wts * deltas**2).sum()
 
         # Calculate gradient of cost function wrt to event rates
         grad_cost = np.zeros_like(theta)
         for a, b in self.loc_slicers:
             grad_cost[self.loceventixs[a:b]] += deltas[a:b][::-1].cumsum()[::-1]*self.wts[a:b]
 
-        return cost, 2*grad_cost/deltas.size, deltas
+        return cost, 2*grad_cost, deltas
 
     @staticmethod
     @nb.njit('Tuple((float64,float64[:],float64[:]))(float64[:],float64[:],int64[:],int64[:,:],float64[:])')
@@ -264,14 +264,14 @@ class HazardELTAdjustment:
 
         # Calculate deltas and cost function for current parameters
         deltas = ((eefs_pred/eefs_targ) - 1)
-        cost = (wts * deltas**2).mean()
+        cost = (wts * deltas**2).sum()
 
         # Calculate gradient of cost function wrt to event rates
         grad_cost = np.zeros_like(theta)
         for a, b in loc_slicers:
             grad_cost[loceventixs[a:b]] += deltas[a:b][::-1].cumsum()[::-1]*wts[a:b]/eefs_targ[a:b]
 
-        return cost, 2*grad_cost/deltas.size, deltas
+        return cost, 2*grad_cost, deltas
 
     @staticmethod
     @nb.njit('Tuple((float64,float64[:],float64[:]))(float64[:],float64[:],int64[:],int64[:,:],float64[:])')
@@ -307,14 +307,14 @@ class HazardELTAdjustment:
 
         # Calculate deltas and cost function for current parameters
         deltas = (eefs_pred - eefs_targ)
-        cost = (wts * deltas**2).mean()
+        cost = (wts * deltas**2).sum()
 
         # Calculate gradient of cost function wrt to event rates
         grad_cost = np.zeros_like(theta)
         for a, b in loc_slicers:
             grad_cost[loceventixs[a:b]] += deltas[a:b][::-1].cumsum()[::-1]*wts[a:b]
 
-        return cost, 2*grad_cost/deltas.size, deltas
+        return cost, 2*grad_cost, deltas
 
     def _adam(self, fun, x0, args=(), alpha=0.001, beta1=0.9, beta2=0.999,
               niter=1000, ftol=1e-6, xtol=1e-9, amin=-np.inf, amax=np.inf):
