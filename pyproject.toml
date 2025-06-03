@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "catadjust"
-version = "0.3.1"
+version = "0.3.2"
 description = "Adjustment tools for catastrophe models"
 authors = [
            { name = "Mutahar Chalmers", email = "mutahar.chalmers@gmail.com" },
@@ -21,7 +21,7 @@ classifiers = [
 ]
 requires-python = ">=3.8"
 dependencies = [
-  "numpy>=1.24", "pandas>=2.0"
+  "numpy>=1.24", "pandas>=2.0", "numba>=0.58.1", "tqdm>=4.66.1"
 ]
 
 [project.urls]
