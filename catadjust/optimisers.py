@@ -114,7 +114,7 @@ def adam(fun, x0, args=(), alpha=0.001, beta1=0.9, beta2=0.999, niter=1000,
 
     pbar = tqdm(range(niter))
     for i in pbar:
-        fs[i], grad, deltas = fun(x, *(args+(ks[i],)))
+        fs[i], grad, deltas, _ = fun(x, *(args+(ks[i],)))
 
         # Convergence checks
         if i >= 1:
@@ -137,6 +137,6 @@ def adam(fun, x0, args=(), alpha=0.001, beta1=0.9, beta2=0.999, niter=1000,
         # Weight clipping
         x = np.clip(x, amin, amax)
 
-    f, grad, deltas = fun(x, *(args+(ks[i],)))
+    f, grad, deltas, _ = fun(x, *(args+(ks[i],)))
     print('Warning: Iteration limit reached before cost function converged within tolerance')
     return dict(x=x, fun=f, jac=grad, nit=i, deltas=deltas), fs[fs>0]

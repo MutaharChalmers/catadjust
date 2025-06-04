@@ -183,6 +183,8 @@ class ELTRateAdjustment:
             Gradient of cost function.
         deltas : ndarray
             Location-event differences.
+        eefs_pred : ndarray
+            Predicted EEFs.
         """
 
         # Calculate EEFs for each location by chunked cumulative sums
@@ -202,7 +204,7 @@ class ELTRateAdjustment:
         for a, b in self.loc_slicers:
             grad_cost[self.loceventixs[a:b]] += deltas[a:b][::-1].cumsum()[::-1]*self.wts[a:b]/eefs_targ[a:b]
 
-        return cost, 2*grad_cost, deltas
+        return cost, 2*grad_cost, deltas, eefs_pred
 
     def _cost_abs(self, theta, eefs_targ, k=1.):
         """Cost function for fitting an ELT to a target EEF by adjusting
@@ -226,6 +228,8 @@ class ELTRateAdjustment:
             Gradient of cost function.
         deltas : ndarray
             Location-event differences.
+        eefs_pred : ndarray
+            Predicted EEFs.
         """
 
         # Calculate EEFs for each location by chunked cumulative sums
@@ -245,10 +249,10 @@ class ELTRateAdjustment:
         for a, b in self.loc_slicers:
             grad_cost[self.loceventixs[a:b]] += deltas[a:b][::-1].cumsum()[::-1]*self.wts[a:b]
 
-        return cost, 2*grad_cost, deltas
+        return cost, 2*grad_cost, deltas, eefs_pred
 
     @staticmethod
-    @nb.njit('Tuple((float64,float64[:],float64[:]))(float64[:],float64[:],int64[:],int64[:,:],float64[:],float64)')
+    @nb.njit('Tuple((float64,float64[:],float64[:],float64[:]))(float64[:],float64[:],int64[:],int64[:,:],float64[:],float64)')
     def _cost_rel_numba(theta, eefs_targ, loceventixs, loc_slicers, wts, k=1.):
         """Cost function for fitting an ELT to a target EEF by adjusting
         event rates. Cost function is based on relative (percentage) errors.
@@ -271,6 +275,8 @@ class ELTRateAdjustment:
             Gradient of cost function.
         deltas : ndarray
             Location-event differences.
+        eefs_pred : ndarray
+            Predicted EEFs.
         """
 
         # Calculate EEFs for each location by chunked cumulative sums
@@ -290,10 +296,10 @@ class ELTRateAdjustment:
         for a, b in loc_slicers:
             grad_cost[loceventixs[a:b]] += deltas[a:b][::-1].cumsum()[::-1]*wts[a:b]/eefs_targ[a:b]
 
-        return cost, 2*grad_cost, deltas
+        return cost, 2*grad_cost, deltas, eefs_pred
 
     @staticmethod
-    @nb.njit('Tuple((float64,float64[:],float64[:]))(float64[:],float64[:],int64[:],int64[:,:],float64[:],float64)')
+    @nb.njit('Tuple((float64,float64[:],float64[:],float64[:]))(float64[:],float64[:],int64[:],int64[:,:],float64[:],float64)')
     def _cost_abs_numba(theta, eefs_targ, loceventixs, loc_slicers, wts, k=1.):
         """Cost function for fitting an ELT to a target EEF by adjusting
         event rates. Cost function is based on absolute errors.
@@ -316,6 +322,8 @@ class ELTRateAdjustment:
             Gradient of cost function.
         deltas : ndarray
             Location-event differences.
+        eefs_pred : ndarray
+            Predicted EEFs.
         """
 
         # Calculate EEFs for each location by chunked cumulative sums
@@ -335,4 +343,4 @@ class ELTRateAdjustment:
         for a, b in loc_slicers:
             grad_cost[loceventixs[a:b]] += deltas[a:b][::-1].cumsum()[::-1]*wts[a:b]
 
-        return cost, 2*grad_cost, deltas
+        return cost, 2*grad_cost, deltas, eefs_pred
