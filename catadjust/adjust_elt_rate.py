@@ -55,7 +55,8 @@ class ELTRateAdjustment:
 
         # Indices in ELT where location changes
         locbreaks = np.nonzero(np.diff(self.elt[loccol]))[0] + 1
-        self.loc_slicers = np.stack([np.r_[0, locbreaks], np.r_[locbreaks, m]]).T
+        self.loc_slicers = np.hstack([np.r_[0, locbreaks][:,None],
+                                      np.r_[locbreaks, m][:,None]])
 
     def calc_eef(self, elt):
         """Calculate EEFs for ELT already sorted by descending loss or hazard.
@@ -76,7 +77,7 @@ class ELTRateAdjustment:
         return elt
 
     def adjust(self, eefs_targ, x0=None, optim='adam', k0=-1, k1=1, alpha=1e-4,
-               niter=100, ftol=1e-3, relative=True, min_rate=1e-6, wts=None,
+               niter=100, ftol=1e-4, relative=True, min_rate=1e-6, wts=None,
                use_numba=_use_numba):
         """Adjust ELT to match location-level hazard curves.
 

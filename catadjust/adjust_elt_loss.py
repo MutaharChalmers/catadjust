@@ -8,7 +8,8 @@ from .optimisers import gd, adam
 
 try:
     import numba as nb
-    _use_numba = True
+    # Numba implementation currently slower than numpy, so default to False
+    _use_numba = False
 except:
     _use_numba = False
 
@@ -45,7 +46,7 @@ class ELTLossAdjustment:
         self.ratecol = ratecol
         self.refcol = refcol
         self.elt = self.calc_eef(elt)
-        self.m = self.elt.shape[0]
+        m = self.elt.shape[0]
 
         # Arrays of unique eventIDs and rates in eventID order
         self.eventIDs, ix = np.unique(self.elt[eventcol], return_index=True)
@@ -57,7 +58,8 @@ class ELTLossAdjustment:
 
         # Indices in ELT where location changes
         locbreaks = np.nonzero(np.diff(self.elt[loccol]))[0] + 1
-        self.loc_slicers = np.stack([np.r_[0, locbreaks], np.r_[locbreaks, self.m]]).T
+        self.loc_slicers = np.hstack([np.r_[0, locbreaks][:,None],
+                                      np.r_[locbreaks, m][:,None]])
 
         # Maximum EEFs in ELT by location - use to make mask for cost function
         self.max_eefs = self.elt.groupby(loccol, sort=False)['eef'].max().values[:,None]
@@ -79,8 +81,8 @@ class ELTLossAdjustment:
         elt['eef'] = elt.groupby(self.loccol, sort=False)[self.ratecol].transform(np.cumsum)
         return elt
 
-    def adjust(self, loss_targ, eefs_targ, x0=None, optim='adam', k0=0, k1=0,
-               min_loss=1e-6, alpha=1e-4, niter=100, ftol=1e-3, relative=True,
+    def adjust(self, loss_targ, eefs_targ, x0=None, optim='adam', k0=0., k1=0.,
+               min_loss=0., alpha=1e-2, niter=100, ftol=1e-4, relative=True,
                wts=None, use_numba=_use_numba):
         """Adjust ELT to match location-level loss curves.
 
@@ -126,7 +128,9 @@ class ELTLossAdjustment:
 
         loss_targ = np.array(loss_targ, dtype=np.float64)
         eefs_targ = np.array(eefs_targ, dtype=np.float64)
-        cost_mask = self.max_eefs >= eefs_targ
+
+        # Only count costs where EEF is valid and target losses are >=0
+        cost_mask = (self.max_eefs >= eefs_targ) & (loss_targ >= 0)
 
         # Best initial guess for loss scaling factors
         if x0 is None:
@@ -158,7 +162,9 @@ class ELTLossAdjustment:
             args = (loss_targ, eefs_targ, cost_mask)
             cost = self._cost_rel if relative else self._cost_abs
         else:
-            args = (loss_targ, eefs_targ, cost_mask, self.loceventixs, self.loc_slicers, self.wts)
+            loss = self.elt[self.refcol].values
+            rates = self.elt[self.ratecol].values
+            args = (loss_targ, eefs_targ, cost_mask, loss, rates, self.loceventixs, self.loc_slicers, self.wts)
             cost = self._cost_rel_numba if relative else self._cost_abs_numba
 
         if optim.lower() == 'adam':
@@ -212,7 +218,6 @@ class ELTLossAdjustment:
         """
 
         # Initialise various arrays
-        loss_targ = np.array(loss_targ, dtype=np.float64)
         eefs_pred = np.empty_like(loss_targ, dtype=np.float64)
         deltas = np.zeros_like(loss_targ, dtype=np.float64)
         grad_cost = np.zeros_like(theta, dtype=np.float64)
@@ -274,7 +279,6 @@ class ELTLossAdjustment:
         """
 
         # Initialise various arrays
-        loss_targ = np.array(loss_targ, dtype=np.float64)
         eefs_pred = np.empty_like(loss_targ, dtype=np.float64)
         deltas = np.zeros_like(loss_targ, dtype=np.float64)
         grad_cost = np.zeros_like(theta, dtype=np.float64)
@@ -300,4 +304,75 @@ class ELTLossAdjustment:
 
         # Calculate cost function and gradient for current parameters
         cost = (self.wts * deltas**2).sum()
+        return cost, 2*k*grad_cost, deltas, eefs_pred
+
+    @staticmethod
+    @nb.njit('Tuple((float64,float64[:],float64[:,:],float64[:,:]))'
+             '(float64[:],float64[:,:],float64[:],boolean[:,:],float64[:],' \
+             'float64[:],int64[:],int64[:,:],float64[:,:],float64)')
+    def _cost_rel_numba(theta, loss_targ, eefs_targ, cost_mask, loss, rates,
+                        loceventixs, loc_slicers, wts, k=1.):
+        """Cost function for fitting an ELT to a target EEF by adjusting
+        event losses. Cost function is based on relative (percentage) errors.
+
+        Parameters
+        ----------
+        theta : ndarray
+            Losses to calculate cost function for, in unique eventID order.
+        loss_targ : ndarray
+            2D array of target losses with rows corresponding to locations,
+            and columns to EEF values which are the same for all locations.
+        eefs_targ : ndarray
+            1D array of target EEFs for all locations.
+        cost_mask : ndarray
+            Boolean mask to use only delta values at location-EEF combinations
+            where the target EEF is less than or equal to the largest EEF in
+            the ELT at that location.
+        loss : ndarray
+            Losses from ELT.
+        rates: ndarray
+            Rates from ELT.
+        k : float, optional
+            Logistic function scale parameter (or growth rate), governing the
+            smoothness of the continuous approximation to the EEF function.
+
+        Returns
+        -------
+        cost : float
+            Cost function evaluated at theta.
+        cost_grad : ndarray
+            Gradient of cost function.
+        deltas : ndarray
+            Location-event differences.
+        eefs_pred : ndarray
+            Predicted EEFs.
+        """
+
+        # Initialise various arrays
+        eefs_pred = np.empty_like(loss_targ, dtype=np.float64)
+        deltas = np.zeros_like(loss_targ, dtype=np.float64)
+        grad_cost = np.zeros_like(theta, dtype=np.float64)
+
+        # Expand event loss factors to event-locations and scale losses
+        loss_pred = loss * theta[loceventixs]
+
+        def expit(x):
+            return np.exp(-np.logaddexp(0, -x))
+
+        # Loop over locations and calculate EEFs
+        for i, (a, b) in enumerate(loc_slicers):
+            loss_ab, loss_pred_ab, rates_ab = loss[a:b], loss_pred[a:b], rates[a:b]
+
+            # Calculate logistic function of 'distance matrix' of target and predicted
+            dmat = loss_targ[i][:,None] - loss_pred_ab
+            logistic = expit(k*dmat)
+
+            # Calculate predicted EEFs, deltas and cost function gradient
+            eefs_pred[i,:] = rates_ab.sum() - (rates_ab*logistic).sum(axis=1)
+            deltas[i,:] = np.where(cost_mask[i], eefs_pred[i,:]/eefs_targ - 1, 0)
+            partial_i =  rates_ab * loss_ab * logistic * (1-logistic)/eefs_targ[:,None]
+            grad_cost[loceventixs[a:b]] += ((wts[i]*deltas[i])[:,None]*partial_i).sum(axis=0)
+
+        # Calculate cost function and gradient for current parameters
+        cost = (wts * deltas**2).sum()
         return cost, 2*k*grad_cost, deltas, eefs_pred

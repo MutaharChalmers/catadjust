@@ -48,7 +48,7 @@ def gd(fun, x0, args=(), alpha=0.001, niter=1000, ftol=1e-6, amin=-np.inf,
 
     pbar = tqdm(range(niter))
     for i in pbar:
-        fs[i], grad, deltas = fun(x, *(args+(ks[i],)))
+        fs[i], grad, deltas, _ = fun(x, *(args+(ks[i],)))
 
         # Convergence checks
         if i >= 1:
@@ -63,7 +63,7 @@ def gd(fun, x0, args=(), alpha=0.001, niter=1000, ftol=1e-6, amin=-np.inf,
         # Weight clipping
         x = np.clip(x, amin, amax)
 
-    f, grad, deltas = fun(x, *(args+(ks[i],)))
+    f, grad, deltas, _ = fun(x, *(args+(ks[i],)))
     print('Warning: Iteration limit reached before cost function converged within tolerance')
     return dict(x=x, fun=f, jac=grad, nit=i, deltas=deltas), fs[fs>0]
 
