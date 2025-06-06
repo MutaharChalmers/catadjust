@@ -7,7 +7,7 @@ from tqdm.auto import tqdm
 
 def gd(fun, x0, args=(), alpha=0.001, niter=1000, ftol=1e-6, amin=-np.inf,
        amax=np.inf, k0=0, k1=0):
-    """Adaptive Moment Estimation gradient descent with weight clipping.
+    """Batch gradient descent.
 
     Parameters
     ----------
@@ -60,7 +60,7 @@ def gd(fun, x0, args=(), alpha=0.001, niter=1000, ftol=1e-6, amin=-np.inf,
         # Update step
         x -= grad * alpha
 
-        # Weight clipping
+        # Bound values
         x = np.clip(x, amin, amax)
 
     f, grad, deltas, _ = fun(x, *(args+(ks[i],)))
@@ -69,7 +69,7 @@ def gd(fun, x0, args=(), alpha=0.001, niter=1000, ftol=1e-6, amin=-np.inf,
 
 def adam(fun, x0, args=(), alpha=0.001, beta1=0.9, beta2=0.999, niter=1000,
          ftol=1e-6, amin=-np.inf, amax=np.inf, k0=0, k1=0):
-    """Adaptive Moment Estimation gradient descent with weight clipping.
+    """Adaptive Moment Estimation gradient descent.
 
     Parameters
     ----------
@@ -134,7 +134,7 @@ def adam(fun, x0, args=(), alpha=0.001, beta1=0.9, beta2=0.999, niter=1000,
         # Update step
         x -= alpha * mhat/(np.sqrt(vhat) + 1e-8)
 
-        # Weight clipping
+        # Bound values
         x = np.clip(x, amin, amax)
 
     f, grad, deltas, _ = fun(x, *(args+(ks[i],)))

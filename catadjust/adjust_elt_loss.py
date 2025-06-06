@@ -94,7 +94,7 @@ class ELTLossAdjustment:
         x0 : Series or ndarray, optional
             Initial guess to use for loss adjustment.
         optim : str, optional
-            Optimiser to use. One of 'adam' (default), 'sgd', 'gd'.
+            Optimiser to use. One of 'adam' (default) or 'gd'.
         k0 : float, optional
             Log10 of initial annealing parameter.
         k1 : float, optional
@@ -169,8 +169,6 @@ class ELTLossAdjustment:
 
         if optim.lower() == 'adam':
             optimise = adam
-        elif optim.lower() == 'sgd':
-            optimise = gd
         elif optim.lower() == 'gd':
             optimise = gd
         else:
