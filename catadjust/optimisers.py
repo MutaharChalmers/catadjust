@@ -24,10 +24,10 @@ def gd(fun, x0, args=(), alpha=0.001, niter=1000, ftol=1e-6, amin=-np.inf,
     ftol : float, optional
         Convergence criterion for cost function. Stop once the absolute
         value of the cost function is less than this.
-    amin : float, optional
-        Minimum value allowed for input values.
-    amax : float, optional
-        Maximum value allowed for input values.
+    amin : float or ndarray, optional
+        Minimum value(s) allowed for input values.
+    amax : float or ndarray, optional
+        Maximum value(s) allowed for input values.
     k0 : float, optional
         Start value for annealing parameter.
     k1 : float, optional
@@ -90,10 +90,10 @@ def adam(fun, x0, args=(), alpha=0.001, beta1=0.9, beta2=0.999, niter=1000,
     ftol : float, optional
         Convergence criterion for cost function. Stop once the absolute
         value of the cost function is less than this.
-    amin : float, optional
-        Minimum value allowed for input values.
-    amax : float, optional
-        Maximum value allowed for input values.
+    amin : float or ndarray, optional
+        Minimum value(s) allowed for input values.
+    amax : float or ndarray, optional
+        Maximum value(s) allowed for input values.
     k0 : float, optional
         Start value for annealing parameter.
     k1 : float, optional
