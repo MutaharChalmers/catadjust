@@ -4,7 +4,7 @@
 import numpy as np
 import pandas as pd
 import scipy.special as ss
-from .optimisers import gd, adam
+from .optimisers import adam, adam_mb
 
 try:
     import numba as nb
@@ -81,7 +81,7 @@ class ELTLossAdjustment:
         elt['eef'] = elt.groupby(self.loccol, sort=False)[self.ratecol].transform(np.cumsum)
         return elt
 
-    def adjust(self, loss_targ, eefs_targ, x0=None, optim='adam', k0=0., k1=0.,
+    def adjust(self, loss_targ, eefs_targ, x0=None, optim='adam', k0=0, k1=0,
                min_loss=0., alpha=1e-2, niter=100, ftol=1e-4, relative=True,
                wts=None, use_numba=_use_numba):
         """Adjust ELT to match location-level loss curves.
@@ -170,10 +170,10 @@ class ELTLossAdjustment:
         if optim.lower() == 'adam':
             optimise = adam
         elif optim.lower() == 'gd':
-            optimise = gd
+            optimise = adam
         else:
             optimise = adam
-        res, fs = optimise(cost, x0, args, alpha=alpha, niter=niter, ftol=ftol, amin=min_loss, k0=k0, k1=k1)
+        res, fs = optimise(cost, x0, args, alpha=alpha, nepochs=niter, ftol=ftol, amin=min_loss, k0=k0, k1=k1)
 
         self.theta = pd.Series(res['x'], index=pd.Index(self.eventIDs, name=self.eventcol))
         elt_adj = self.elt.copy()
