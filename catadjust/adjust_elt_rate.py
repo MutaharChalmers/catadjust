@@ -73,7 +73,7 @@ class ELTRateAdjustment:
             Input ELT with additional EEF column.
         """
 
-        elt['eef'] = elt.groupby(self.loccol, sort=False)[self.ratecol].transform(np.cumsum)
+        elt['eef'] = elt.groupby(self.loccol, sort=False)[self.ratecol].transform('cumsum')
         return elt
 
     def adjust(self, eefs_targ, x0=None, nepochs=100, batch_size=0, ftol=1e-3,
@@ -138,6 +138,7 @@ class ELTRateAdjustment:
                                        ).groupby(self.eventcol)[self.ratecol].mean())
         else:
             x0 = np.array(x0, dtype=np.float64)
+        self.x0 = x0
 
         if wts is None:
             self.wts = np.ones_like(eefs_targ, dtype=np.float64)/eefs_targ.shape[0]
@@ -182,6 +183,7 @@ class ELTRateAdjustment:
         elt_adj = self.elt.copy()
         elt_adj[self.ratecol] = res['x'][self.loceventixs]
         elt_adj = self.calc_eef(elt_adj)
+        elt_adj['rp'] = 1/(1-np.exp(-elt_adj['eef']))
         elt_adj['eef_targ'] = eefs_targ
         elt_adj['delta'] = res['deltas']
         elt_adj['wt'] = self.wts

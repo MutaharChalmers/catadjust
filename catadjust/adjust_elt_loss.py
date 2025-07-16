@@ -78,12 +78,12 @@ class ELTLossAdjustment:
             Input ELT with additional EEF column.
         """
 
-        elt['eef'] = elt.groupby(self.loccol, sort=False)[self.ratecol].transform(np.cumsum)
+        elt['eef'] = elt.groupby(self.loccol, sort=False)[self.ratecol].transform('cumsum')
         return elt
 
     def adjust(self, loss_targ, eefs_targ, x0=None, nepochs=100, batch_size=0, ftol=1e-3,
-               alpha=0.001, beta1=0.9, beta2=0.999, relative=True, seed=42, min_loss=0,
-               max_loss=np.inf, wts=None, k0=0, k1=0, use_numba=_use_numba):
+               alpha=0.001, beta1=0.9, beta2=0.999, relative=False, seed=42, min_loss_fac=0,
+               max_loss_fac=np.inf, wts=None, k0=-10, k1=0, use_numba=_use_numba):
         """Adjust ELT losses to match location-level loss EEF curves.
 
         Parameters
@@ -113,10 +113,10 @@ class ELTLossAdjustment:
             Use relative (percentage) error in cost function.
         seed : int, optional
             Seed for random number generator used for SGD and mini-batch GD.
-        min_rate : float, optional
-            Minimum allowable rate constraint.
-        max_rate : float, optional
-            Maximum allowable rate constraint.
+        min_loss_fac : float, optional
+            Minimum allowable loss factor constraint.
+        max_loss_fac : float, optional
+            Maximum allowable loss factor constraint.
         wts : ndarray, optional
             User-defined weights to apply to each location-event. By default,
             locations are equally weighted.
@@ -145,21 +145,7 @@ class ELTLossAdjustment:
 
         # Best initial guess for loss scaling factors
         if x0 is None:
-            x0_df = []
-            for i, ab in enumerate(self.loc_slicers):
-                elt_ab = self.elt[slice(*ab)]
-                # Interpolate losses at target EEFs and calculate ratios
-                x0_df.append(pd.DataFrame({self.eventcol: elt_ab[self.eventcol],
-                                           self.refcol: elt_ab[self.refcol],
-                                           'x0': np.interp(elt_ab['eef'],
-                                                           eefs_targ[::-1],
-                                                           loss_targ[i,::-1]) /
-                                                           elt_ab[self.refcol]}))
-            # Combine to DataFrame and loss-weight event loss scaling factors
-            x0_df = pd.concat(x0_df)
-            x0_df['prod'] = x0_df['x0'] * x0_df[self.refcol]
-            x0 = np.array(x0_df.groupby(self.eventcol, sort=False)['prod'].sum()/
-                          x0_df.groupby(self.eventcol, sort=False)[self.refcol].sum())
+            x0 = np.ones(self.nevents)
         else:
             x0 = np.array(x0, dtype=np.float64)
         self.x0 = x0
@@ -177,8 +163,8 @@ class ELTLossAdjustment:
 
         # Create dict to pass arguments for the optimiser
         opt_args = {'alpha': alpha, 'beta1': beta1, 'beta2': beta2,
-                    'nepochs': nepochs, 'ftol': ftol, 'amin': min_loss,
-                    'amax': max_loss, 'k0': k0, 'k1': k1}
+                    'nepochs': nepochs, 'ftol': ftol, 'amin': min_loss_fac,
+                    'amax': max_loss_fac, 'k0': k0, 'k1': k1}
 
         if not use_numba:
             cost_args = (loss_targ, eefs_targ, cost_mask)
@@ -220,6 +206,7 @@ class ELTLossAdjustment:
         elt_adj[self.refcol] = res['x'][self.loceventixs] * self.elt[self.refcol]
         elt_adj = elt_adj.sort_values([self.loccol, self.refcol], ascending=[True, False])
         elt_adj = self.calc_eef(elt_adj)
+        elt_adj['rp'] = 1/(1-np.exp(-elt_adj['eef']))
         return elt_adj, res, fs
 
     def _cost_rel(self, theta, loss_targ, eefs_targ, cost_mask, k=1.):
