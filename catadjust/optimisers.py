@@ -6,7 +6,7 @@ from tqdm.auto import tqdm
 
 
 def adam(fun, x0, args=(), alpha=0.001, beta1=0.9, beta2=0.999, nepochs=100,
-         ftol=1e-3, amin=-np.inf, amax=np.inf, k0=0, k1=0):
+         ftol=1e-3, amin=-np.inf, amax=np.inf, k0=0, k1=0, annealing_schedule='log'):
     """Adaptive Moment Estimation gradient descent.
 
     Parameters
@@ -36,6 +36,8 @@ def adam(fun, x0, args=(), alpha=0.001, beta1=0.9, beta2=0.999, nepochs=100,
         Start value for annealing parameter.
     k1 : float, optional
         End value for annealing parameter.
+    annealing_schedule : str, optional
+        Annealing schedule. One of log, lin, cos.
 
     Returns
     -------
@@ -48,7 +50,18 @@ def adam(fun, x0, args=(), alpha=0.001, beta1=0.9, beta2=0.999, nepochs=100,
 
     x, m, v = x0*1, 0, 0
     fs = np.zeros(nepochs)
-    ks = np.logspace(k0, k1, nepochs)
+    if 'log' in annealing_schedule.lower():
+        ks = np.logspace(k0, k1, nepochs)
+    elif 'lin' in annealing_schedule.lower():
+        ks = np.linspace(k0, k1, nepochs)
+    elif 'cos' in annealing_schedule.lower():
+        log = np.logspace(k0, k1, nepochs)
+        lin = np.linspace(log[0], log[-1], nepochs)
+        midline = (lin+log)/2
+        amplitude = (lin-log)/2
+        ks = midline + amplitude*np.cos(2*np.pi*lin)
+    else:
+        ks = np.logspace(k0, k1, nepochs)
 
     pbar = tqdm(range(nepochs))
     for i in pbar:
@@ -59,7 +72,7 @@ def adam(fun, x0, args=(), alpha=0.001, beta1=0.9, beta2=0.999, nepochs=100,
             ftol_msg = f'f={fs[i]:.2e}{">" if fs[i] > ftol else "<="}{ftol:.2e}'
             pbar.set_description(f'{ftol_msg}')
             if fs[i] < ftol:
-                return dict(x=x, fun=fs[i], jac=grad, nit=i, deltas=deltas), fs[fs>0]
+                return dict(x=x, fun=fs[i], jac=grad, nit=i, deltas=deltas, annealing=ks), fs[fs>0]
 
         # Estimates of first and second moment of gradient
         m = (1 - beta1)*grad + beta1*m
@@ -77,10 +90,11 @@ def adam(fun, x0, args=(), alpha=0.001, beta1=0.9, beta2=0.999, nepochs=100,
 
     f, grad, deltas, _ = fun(x, *(args+(ks[i],)))
     print('Warning: Iteration limit reached before cost function converged within tolerance')
-    return dict(x=x, fun=f, jac=grad, nit=i, deltas=deltas), fs[fs>0]
+    return dict(x=x, fun=f, jac=grad, nit=i, deltas=deltas, annealing=ks), fs[fs>0]
 
 def adam_mb(fun, x0, args=(), alpha=0.001, beta1=0.9, beta2=0.999, nepochs=100,
-            batch_size=0, rng=None, nrecs=1, ftol=1e-3, amin=-np.inf, amax=np.inf, k0=0, k1=0):
+            batch_size=0, rng=None, nrecs=1, ftol=1e-3, amin=-np.inf, amax=np.inf,
+            k0=0, k1=0, annealing_schedule='log'):
     """Adaptive Moment Estimation gradient descent for mini-batch/SGD.
 
     Parameters
@@ -116,6 +130,8 @@ def adam_mb(fun, x0, args=(), alpha=0.001, beta1=0.9, beta2=0.999, nepochs=100,
         Start value for annealing parameter.
     k1 : float, optional
         End value for annealing parameter.
+    annealing_schedule : str, optional
+        Annealing schedule. One of log, lin, cos.
 
     Returns
     -------
@@ -128,7 +144,18 @@ def adam_mb(fun, x0, args=(), alpha=0.001, beta1=0.9, beta2=0.999, nepochs=100,
 
     x, m, v = x0*1, 0, 0
     fs = np.zeros(nepochs)
-    ks = np.logspace(k0, k1, nepochs)
+    if 'log' in annealing_schedule.lower():
+        ks = np.logspace(k0, k1, nepochs)
+    elif 'lin' in annealing_schedule.lower():
+        ks = np.linspace(k0, k1, nepochs)
+    elif 'cos' in annealing_schedule.lower():
+        log = np.logspace(-1, 1, nepochs)
+        lin = np.linspace(log[0], log[-1], nepochs)
+        midline = (lin+log)/2
+        amplitude = (lin-log)/2
+        ks = midline + amplitude*np.cos(2*np.pi*lin)
+    else:
+        ks = np.logspace(k0, k1, nepochs)
     if rng is None:
         rng = np.random.default_rng(42)
 
@@ -163,9 +190,9 @@ def adam_mb(fun, x0, args=(), alpha=0.001, beta1=0.9, beta2=0.999, nepochs=100,
             ftol_msg = f'f={fs[i]:.2e}{">" if fs[i] > ftol else "<="}{ftol:.2e}'
             pbar.set_description(f'{ftol_msg}')
             if fs[i] < ftol:
-                return dict(x=x, fun=fs[i], jac=grad, nit=i, deltas=deltas), fs[fs>0]
+                return dict(x=x, fun=fs[i], jac=grad, nit=i, deltas=deltas, annealing=ks), fs[fs>0]
 
     # Reevaluate cost function and gradient for all records
     f, grad, deltas, _ = fun(x, *(args+(np.arange(nrecs, dtype=np.int64), ks[i])))
     print('Warning: Iteration limit reached before cost function converged within tolerance')
-    return dict(x=x, fun=f, jac=grad, nit=i, deltas=deltas), fs[fs>0]
+    return dict(x=x, fun=f, jac=grad, nit=i, deltas=deltas, annealing=ks), fs[fs>0]

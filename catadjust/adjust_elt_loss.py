@@ -81,9 +81,9 @@ class ELTLossAdjustment:
         elt['eef'] = elt.groupby(self.loccol, sort=False)[self.ratecol].transform('cumsum')
         return elt
 
-    def adjust(self, loss_targ, eefs_targ, x0=None, nepochs=100, batch_size=0, ftol=1e-3,
+    def adjust(self, loss_targ, eefs_targ, x0=None, nepochs=1_000, batch_size=0, ftol=1e-6,
                alpha=0.001, beta1=0.9, beta2=0.999, relative=False, seed=42, min_loss_fac=0,
-               max_loss_fac=np.inf, wts=None, k0=-10, k1=0, use_numba=_use_numba):
+               max_loss_fac=np.inf, wts=None, k0=-1, k1=1, annealing_schedule='log', use_numba=_use_numba):
         """Adjust ELT losses to match location-level loss EEF curves.
 
         Parameters
@@ -124,6 +124,8 @@ class ELTLossAdjustment:
             Log10 of initial annealing parameter.
         k1 : float, optional
             Log10 of final annealing parameter.
+        annealing_schedule : str, optional
+            Annealing schedule. One of log, lin, cos.
         use_numba : boolean, optional
             Whether to use numba for a ~50-100% speedup.
 
@@ -162,9 +164,9 @@ class ELTLossAdjustment:
             stoc_args = {'nrecs': nlocs, 'rng': rng, 'batch_size': batch_size}
 
         # Create dict to pass arguments for the optimiser
-        opt_args = {'alpha': alpha, 'beta1': beta1, 'beta2': beta2,
-                    'nepochs': nepochs, 'ftol': ftol, 'amin': min_loss_fac,
-                    'amax': max_loss_fac, 'k0': k0, 'k1': k1}
+        opt_args = {'alpha': alpha, 'beta1': beta1, 'beta2': beta2, 'nepochs': nepochs,
+                    'ftol': ftol, 'amin': min_loss_fac, 'amax': max_loss_fac,
+                    'k0': k0, 'k1': k1, 'annealing_schedule': annealing_schedule}
 
         if not use_numba:
             cost_args = (loss_targ, eefs_targ, cost_mask)
