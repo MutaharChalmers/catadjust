@@ -89,11 +89,9 @@ class ELTLossAdjustment:
         Parameters
         ----------
         loss_targ : Series or ndarray
-            Target losses in the same order as the processed ELT,
-            corresponding to the initial order of EEFs by location.
+            Target losses.
         eefs_targ : Series or ndarray
-            Target EEFs in the same order as the processed ELT,
-            corresponding to the initial order of EEFs by location.
+            Target EEFs.
         x0 : Series or ndarray, optional
             Initial guess to use for loss adjustment.
         nepochs : int, optional
@@ -266,11 +264,11 @@ class ELTLossAdjustment:
             eefs_pred[i,:] = rates_ab.sum() - (rates_ab*logistic).sum(axis=1)
             deltas[i,:] = np.where(cost_mask[i], eefs_pred[i,:]/eefs_targ - 1, 0)
             partial_i =  rates_ab * loss_ab * logistic * (1-logistic)/eefs_targ[:,None]
-            grad_cost[self.loceventixs[a:b]] += ((self.wts[i]*deltas[i])[:,None]*partial_i).sum(axis=0)
+            grad_cost[self.loceventixs[a:b]] += 2*k*((self.wts[i]*deltas[i])[:,None]*partial_i).sum(axis=0)
 
         # Calculate cost function and gradient for current parameters
         cost = (self.wts * deltas**2).sum()
-        return cost, 2*k*grad_cost, deltas, eefs_pred
+        return cost, grad_cost, deltas, eefs_pred
 
     def _cost_abs(self, theta, loss_targ, eefs_targ, cost_mask, k=1.):
         """Cost function for fitting an ELT to a target EEF by adjusting
@@ -327,11 +325,11 @@ class ELTLossAdjustment:
             eefs_pred[i,:] = rates_ab.sum() - (rates_ab*logistic).sum(axis=1)
             deltas[i,:] = np.where(cost_mask[i], eefs_pred[i,:] - eefs_targ, 0)
             partial_i =  rates_ab * loss_ab * logistic * (1-logistic)
-            grad_cost[self.loceventixs[a:b]] += ((self.wts[i]*deltas[i])[:,None]*partial_i).sum(axis=0)
+            grad_cost[self.loceventixs[a:b]] += 2*k*((self.wts[i]*deltas[i])[:,None]*partial_i).sum(axis=0)
 
         # Calculate cost function and gradient for current parameters
         cost = (self.wts * deltas**2).sum()
-        return cost, 2*k*grad_cost, deltas, eefs_pred
+        return cost, grad_cost, deltas, eefs_pred
 
     @staticmethod
     @nb.njit('Tuple((float64,float64[:],float64[:,:],float64[:,:]))' \
@@ -398,11 +396,11 @@ class ELTLossAdjustment:
             eefs_pred[i,:] = rates_ab.sum() - (rates_ab*logistic).sum(axis=1)
             deltas[i,:] = np.where(cost_mask[i], eefs_pred[i,:]/eefs_targ - 1, 0)
             partial_i =  rates_ab * loss_ab * logistic * (1-logistic)/eefs_targ[:,None]
-            grad_cost[loceventixs[a:b]] += ((wts[i]*deltas[i])[:,None]*partial_i).sum(axis=0)
+            grad_cost[loceventixs[a:b]] += 2*k*((wts[i]*deltas[i])[:,None]*partial_i).sum(axis=0)
 
         # Calculate cost function and gradient for current parameters
         cost = (wts * deltas**2).sum()
-        return cost, 2*k*grad_cost, deltas, eefs_pred
+        return cost, grad_cost, deltas, eefs_pred
 
     @staticmethod
     @nb.njit('Tuple((float64,float64[:],float64[:,:],float64[:,:]))' \
@@ -469,8 +467,8 @@ class ELTLossAdjustment:
             eefs_pred[i,:] = rates_ab.sum() - (rates_ab*logistic).sum(axis=1)
             deltas[i,:] = np.where(cost_mask[i], eefs_pred[i,:] - eefs_targ, 0)
             partial_i =  rates_ab * loss_ab * logistic * (1-logistic)
-            grad_cost[loceventixs[a:b]] += ((wts[i]*deltas[i])[:,None]*partial_i).sum(axis=0)
+            grad_cost[loceventixs[a:b]] += 2*k*((wts[i]*deltas[i])[:,None]*partial_i).sum(axis=0)
 
         # Calculate cost function and gradient for current parameters
         cost = (wts * deltas**2).sum()
-        return cost, 2*k*grad_cost, deltas, eefs_pred
+        return cost, grad_cost, deltas, eefs_pred

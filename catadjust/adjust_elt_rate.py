@@ -230,9 +230,9 @@ class ELTRateAdjustment:
         # Calculate gradient of cost function wrt to event rates
         grad_cost = np.zeros_like(theta)
         for a, b in self.loc_slicers:
-            grad_cost[self.loceventixs[a:b]] += deltas[a:b][::-1].cumsum()[::-1]*self.wts[a:b]/eefs_targ[a:b]
+            grad_cost[self.loceventixs[a:b]] += 2*deltas[a:b][::-1].cumsum()[::-1]*self.wts[a:b]/eefs_targ[a:b]
 
-        return cost, 2*grad_cost, deltas, eefs_pred
+        return cost, grad_cost, deltas, eefs_pred
 
     def _cost_abs(self, theta, eefs_targ, k=1.):
         """Cost function for fitting an ELT to a target EEF by adjusting
@@ -275,9 +275,9 @@ class ELTRateAdjustment:
         # Calculate gradient of cost function wrt to event rates
         grad_cost = np.zeros_like(theta)
         for a, b in self.loc_slicers:
-            grad_cost[self.loceventixs[a:b]] += deltas[a:b][::-1].cumsum()[::-1]*self.wts[a:b]
+            grad_cost[self.loceventixs[a:b]] += 2*deltas[a:b][::-1].cumsum()[::-1]*self.wts[a:b]
 
-        return cost, 2*grad_cost, deltas, eefs_pred
+        return cost, grad_cost, deltas, eefs_pred
 
     @staticmethod
     @nb.njit('Tuple((float64,float64[:],float64[:],float64[:]))' \
