@@ -34,11 +34,17 @@ class ELTRateAdjustment:
         """
 
         # Load ELT to be adjusted and pre-process
-        elt = elt_raw.astype({loccol: np.int64, eventcol: np.int64,
+        elt = elt_raw.astype({loccol: str, eventcol: np.int64,
                               ratecol: np.float64, refcol: np.float64}
                             ).drop_duplicates([loccol, eventcol]
                                              ).sort_values([loccol, refcol],
                                                            ascending=[True, False]).dropna()
+
+        # Mapping from locationIDs to internal locids
+        locations = elt[loccol].unique()
+        locids = np.arange(locations.size, dtype=np.int64)
+        elt['_locid'] = elt[loccol].map(dict(zip(locations, locids)))
+
         self.loccol = loccol
         self.eventcol = eventcol
         self.ratecol = ratecol
@@ -54,7 +60,7 @@ class ELTRateAdjustment:
         self.loceventixs = np.searchsorted(self.eventIDs, self.elt[eventcol])
 
         # Indices in ELT where location changes
-        locbreaks = np.nonzero(np.diff(self.elt[loccol]))[0] + 1
+        locbreaks = np.nonzero(np.diff(self.elt['_locid']))[0] + 1
         self.loc_slicers = np.hstack([np.r_[0, locbreaks][:,None],
                                       np.r_[locbreaks, m][:,None]])
 
@@ -73,7 +79,7 @@ class ELTRateAdjustment:
             Input ELT with additional EEF column.
         """
 
-        elt['eef'] = elt.groupby(self.loccol, sort=False)[self.ratecol].transform('cumsum')
+        elt['eef'] = elt.groupby('_locid', sort=False)[self.ratecol].transform('cumsum')
         return elt
 
     def adjust(self, eefs_targ, x0=None, nepochs=100, batch_size=0, ftol=1e-3,
