@@ -33,17 +33,17 @@ class ELTRateAdjustment:
             Name of column containing event-location loss or hazard intensity.
         """
 
-        # Load ELT to be adjusted and pre-process
+        # Load ELT to be adjusted, convert datatypes, drop duplicates and sort
         elt = elt_raw.astype({loccol: str, eventcol: np.int64,
                               ratecol: np.float64, refcol: np.float64}
-                            ).drop_duplicates([loccol, eventcol]
-                                             ).sort_values([loccol, refcol],
-                                                           ascending=[True, False]).dropna()
+                              ).drop_duplicates([loccol, eventcol]).dropna()
+        elt = elt.sort_values([loccol, refcol], ascending=[True, False])
 
         # Mapping from locationIDs to internal locids
         locations = elt[loccol].unique()
         locids = np.arange(locations.size, dtype=np.int64)
-        elt['_locid'] = elt[loccol].map(dict(zip(locations, locids)))
+        self.locmap = dict(zip(locations, locids))
+        elt['_locid'] = elt[loccol].map(self.locmap)
 
         self.loccol = loccol
         self.eventcol = eventcol
@@ -79,18 +79,22 @@ class ELTRateAdjustment:
             Input ELT with additional EEF column.
         """
 
-        elt['eef'] = elt.groupby('_locid', sort=False)[self.ratecol].transform('cumsum')
+        elt['eef'] = elt.groupby('_locid', sort=False
+                                 )[self.ratecol].transform('cumsum')
         return elt
 
-    def adjust(self, eefs_targ, x0=None, nepochs=100, batch_size=0, ftol=1e-3,
-               alpha=0.001, beta1=0.9, beta2=0.999, relative=True, seed=42,
-               min_rate=1e-6, max_rate=np.inf, wts=None, k0=0, k1=0, use_numba=_use_numba):
+    def adjust(self, ref_targ, eefs_targ, x0=None, nepochs=100, batch_size=0,
+               ftol=1e-3, alpha=0.001, beta1=0.9, beta2=0.999, relative=True,
+               seed=42, min_rate=1e-6, max_rate=np.inf, wts=None,
+               use_numba=_use_numba):
         """Adjust ELT rates to match location-level loss or hazard EEF curves.
 
         Parameters
         ----------
-        eefs_targ : Series or ndarray
-            Target EEFs in the same order as the processed ELT.
+        ref_targ : ndarray
+            Target hazard or losses in an (m locations, n target EEFs) array.
+        eefs_targ : ndarray
+            Target EEFs in (n,) array.
         x0 : Series or ndarray, optional
             Initial guess to use for rate adjustment.
         nepochs : int, optional
@@ -117,10 +121,6 @@ class ELTRateAdjustment:
         wts : ndarray, optional
             User-defined weights to apply to each location-event. By default,
             locations are equally weighted.
-        k0 : float, optional
-            Log10 of initial annealing parameter.
-        k1 : float, optional
-            Log10 of final annealing parameter.
         use_numba : boolean, optional
             Whether to use numba for a ~50-100% speedup.
 
@@ -134,22 +134,36 @@ class ELTRateAdjustment:
             Learning curve.
         """
 
-        eefs_targ = np.array(eefs_targ, dtype=np.float64)
+        # Interpolate input target EEFs to all rows of ELT
+        eefs_targ = [np.interp(x[self.refcol], ref_targ[i], eefs_targ)
+                     for i, x in self.elt.groupby('_locid')]
+        eefs_targ = np.concatenate(eefs_targ)
 
-        # Best initial guess for adjusted rates
+        # Estimate target rates by location
+        eefs_targ_loc = np.split(eefs_targ, self.loc_slicers[1:,0])
+        rates_loc = []
+        for eef_targ_loc in eefs_targ_loc:
+            rates0 = np.diff(eef_targ_loc)
+            rates_loc.append(np.r_[eef_targ_loc[0] if rates0[0]>0 else 0., rates0])
+        rates_loc = pd.DataFrame({self.eventcol: self.elt[self.eventcol].values,
+                                  self.ratecol: np.concatenate(rates_loc)}
+                                  ).replace({self.ratecol: {0: np.nan}})
+
+        # Initial guess for adjusted rates based on mean location rate by event
         if x0 is None:
-            eefs_loc = np.split(eefs_targ, self.loc_slicers[1:,0])
-            rates0 = np.concatenate([np.r_[eef_loc[0], np.diff(eef_loc)] for eef_loc in eefs_loc])
-            x0 = np.array(pd.DataFrame({self.eventcol: self.elt[self.eventcol].values, self.ratecol: rates0}
-                                       ).groupby(self.eventcol)[self.ratecol].mean())
-        else:
-            x0 = np.array(x0, dtype=np.float64)
-        self.x0 = x0
+            x0 = rates_loc.groupby(self.eventcol)[self.ratecol].mean().fillna(0)
+        self.x0 = np.array(x0, dtype=np.float64)
 
         if wts is None:
-            self.wts = np.ones_like(eefs_targ, dtype=np.float64)/eefs_targ.shape[0]
+            # Default weights are uniform
+            wts = np.where(rates_loc[self.ratecol].values>0,
+                           np.ones_like(eefs_targ), 0)
         else:
-            self.wts = np.array(wts, dtype=np.float64)/np.sum(wts)
+            # As weights are passed by location and target EEF, need to convert
+            wts = [np.interp(x[self.refcol], ref_targ[i], wts[i], left=0, right=0)
+                   for i, x in self.elt.groupby('_locid')]
+            wts = np.concatenate(wts)
+        self.wts = np.array(wts, dtype=np.float64)/np.sum(wts)
 
         # Create RNG object for SGD and mini-batch SGD
         if batch_size > 0:
@@ -160,12 +174,12 @@ class ELTRateAdjustment:
         # Create dict to pass arguments for the optimiser
         opt_args = {'alpha': alpha, 'beta1': beta1, 'beta2': beta2,
                     'nepochs': nepochs, 'ftol': ftol, 'amin': min_rate,
-                    'amax': max_rate, 'k0': k0, 'k1': k1}
+                    'amax': max_rate, 'k0': 0., 'k1': 0.}
 
         if not use_numba:
             cost_args = (eefs_targ,)
             if batch_size > 0:
-                cost = self._cost_rel_minibatch if relative else self._cost_abs_minibatch
+                cost = self._cost_rel_mb if relative else self._cost_abs_mb
                 optimise = adam_mb
                 opt_args = {**opt_args, **stoc_args}
             else:
@@ -174,18 +188,19 @@ class ELTRateAdjustment:
         else:
             cost_args = (eefs_targ, self.loceventixs, self.loc_slicers, self.wts)
             if batch_size > 0:
-                cost = self._cost_rel_minibatch_numba if relative else self._cost_abs_minibatch_numba
+                cost = self._cost_rel_mb_nb if relative else self._cost_abs_mb_nb
                 optimise = adam_mb
                 opt_args = {**opt_args, **stoc_args}
             else:
-                cost = self._cost_rel_numba if relative else self._cost_abs_numba
+                cost = self._cost_rel_nb if relative else self._cost_abs_nb
                 optimise = adam
 
         # Do the optimisation
-        res, fs = optimise(cost, x0, cost_args, **opt_args)
+        res, fs = optimise(cost, self.x0, cost_args, **opt_args)
 
         # Post-processing of results
-        self.theta = pd.Series(res['x'], index=pd.Index(self.eventIDs, name=self.eventcol))
+        event_ix = pd.Index(self.eventIDs, name=self.eventcol)
+        self.theta = pd.Series(res['x'], index=event_ix)
         elt_adj = self.elt.copy()
         elt_adj[self.ratecol] = res['x'][self.loceventixs]
         elt_adj = self.calc_eef(elt_adj)
@@ -207,7 +222,7 @@ class ELTRateAdjustment:
             Target EEFs for location-events in the same order as the
             pre-processed ELT.
         k : float, optional
-            Annealing parameter.
+            Annealing parameter - not used, kept for API consistency.
 
         Returns
         -------
@@ -230,13 +245,14 @@ class ELTRateAdjustment:
             eefs_pred[a:b] = rates[a:b].cumsum()
 
         # Calculate deltas and cost function for current parameters
-        deltas = ((eefs_pred/eefs_targ) - 1)
+        deltas = (eefs_pred/eefs_targ) - 1
         cost = (self.wts * deltas**2).sum()
 
         # Calculate gradient of cost function wrt to event rates
         grad_cost = np.zeros_like(theta)
         for a, b in self.loc_slicers:
-            grad_cost[self.loceventixs[a:b]] += 2*deltas[a:b][::-1].cumsum()[::-1]*self.wts[a:b]/eefs_targ[a:b]
+            dg = 2*deltas[a:b][::-1].cumsum()[::-1]*self.wts[a:b]/eefs_targ[a:b]
+            grad_cost[self.loceventixs[a:b]] += dg
 
         return cost, grad_cost, deltas, eefs_pred
 
@@ -252,7 +268,7 @@ class ELTRateAdjustment:
             Target EEFs for location-events in the same order as the
             pre-processed ELT.
         k : float, optional
-            Annealing parameter.
+            Annealing parameter - not used, kept for API consistency.
 
         Returns
         -------
@@ -275,20 +291,21 @@ class ELTRateAdjustment:
             eefs_pred[a:b] = rates[a:b].cumsum()
 
         # Calculate deltas and cost function for current parameters
-        deltas = (eefs_pred - eefs_targ)
+        deltas = eefs_pred - eefs_targ
         cost = (self.wts * deltas**2).sum()
 
         # Calculate gradient of cost function wrt to event rates
         grad_cost = np.zeros_like(theta)
         for a, b in self.loc_slicers:
-            grad_cost[self.loceventixs[a:b]] += 2*deltas[a:b][::-1].cumsum()[::-1]*self.wts[a:b]
+            dg = 2*deltas[a:b][::-1].cumsum()[::-1]*self.wts[a:b]
+            grad_cost[self.loceventixs[a:b]] += dg
 
         return cost, grad_cost, deltas, eefs_pred
 
     @staticmethod
     @nb.njit('Tuple((float64,float64[:],float64[:],float64[:]))' \
              '(float64[:],float64[:],int64[:],int64[:,:],float64[:],float64)')
-    def _cost_rel_numba(theta, eefs_targ, loceventixs, loc_slicers, wts, k=1.):
+    def _cost_rel_nb(theta, eefs_targ, loceventixs, loc_slicers, wts, k=1.):
         """Cost function for fitting an ELT to a target EEF by adjusting
         event rates. Cost function is based on relative (percentage) errors.
 
@@ -300,7 +317,7 @@ class ELTRateAdjustment:
             Target EEFs for location-events in the same order as the
             pre-processed ELT.
         k : float, optional
-            Annealing parameter.
+            Annealing parameter - not used, kept for API consistency.
 
         Returns
         -------
@@ -323,20 +340,21 @@ class ELTRateAdjustment:
             eefs_pred[a:b] = rates[a:b].cumsum()
 
         # Calculate deltas and cost function for current parameters
-        deltas = ((eefs_pred/eefs_targ) - 1)
+        deltas = (eefs_pred/eefs_targ) - 1
         cost = (wts * deltas**2).sum()
 
         # Calculate gradient of cost function wrt to event rates
         grad_cost = np.zeros_like(theta)
         for a, b in loc_slicers:
-            grad_cost[loceventixs[a:b]] += 2*deltas[a:b][::-1].cumsum()[::-1]*wts[a:b]/eefs_targ[a:b]
+            dg = 2*deltas[a:b][::-1].cumsum()[::-1]*wts[a:b]/eefs_targ[a:b]
+            grad_cost[loceventixs[a:b]] += dg
 
         return cost, grad_cost, deltas, eefs_pred
 
     @staticmethod
     @nb.njit('Tuple((float64,float64[:],float64[:],float64[:]))' \
              '(float64[:],float64[:],int64[:],int64[:,:],float64[:],float64)')
-    def _cost_abs_numba(theta, eefs_targ, loceventixs, loc_slicers, wts, k=1.):
+    def _cost_abs_nb(theta, eefs_targ, loceventixs, loc_slicers, wts, k=1.):
         """Cost function for fitting an ELT to a target EEF by adjusting
         event rates. Cost function is based on absolute errors.
 
@@ -348,7 +366,7 @@ class ELTRateAdjustment:
             Target EEFs for location-events in the same order as the
             pre-processed ELT.
         k : float, optional
-            Annealing parameter.
+            Annealing parameter - not used, kept for API consistency.
 
         Returns
         -------
@@ -371,17 +389,18 @@ class ELTRateAdjustment:
             eefs_pred[a:b] = rates[a:b].cumsum()
 
         # Calculate deltas and cost function for current parameters
-        deltas = (eefs_pred - eefs_targ)
+        deltas = eefs_pred - eefs_targ
         cost = (wts * deltas**2).sum()
 
         # Calculate gradient of cost function wrt to event rates
         grad_cost = np.zeros_like(theta)
         for a, b in loc_slicers:
-            grad_cost[loceventixs[a:b]] += 2*deltas[a:b][::-1].cumsum()[::-1]*wts[a:b]
+            dg = 2*deltas[a:b][::-1].cumsum()[::-1]*wts[a:b]
+            grad_cost[loceventixs[a:b]] += dg
 
         return cost, grad_cost, deltas, eefs_pred
 
-    def _cost_rel_minibatch(self, theta, eefs_targ, locs_mb, k=1.):
+    def _cost_rel_mb(self, theta, eefs_targ, locs_mb, k=1.):
         """Cost function for fitting an ELT to a target EEF by adjusting
         event rates. Cost function is based on relative (percentage) errors.
         This function implements mini-batching.
@@ -396,7 +415,7 @@ class ELTRateAdjustment:
         locs_mb : ndarray
             Indices of the locations in this mini-batch.
         k : float, optional
-            Annealing parameter.
+            Annealing parameter - not used, kept for API consistency.
 
         Returns
         -------
@@ -432,14 +451,15 @@ class ELTRateAdjustment:
             eefs_pred[a:b] = rates[a:b].cumsum()
             deltas[a:b] = eefs_pred[a:b]/eefs_targ[a:b] - 1
             cost += (wts[a:b] * deltas[a:b]**2).sum()
-            grad_cost[self.loceventixs[a:b]] += 2*deltas[a:b][::-1].cumsum()[::-1]*wts[a:b]/eefs_targ[a:b]
+            dg = 2*deltas[a:b][::-1].cumsum()[::-1]*wts[a:b]/eefs_targ[a:b]
+            grad_cost[self.loceventixs[a:b]] += dg
 
         return cost, grad_cost, deltas, eefs_pred
 
     @staticmethod
     @nb.njit('Tuple((float64,float64[:],float64[:],float64[:]))' \
              '(float64[:],float64[:],int64[:],int64[:,:],float64[:],int64[:],float64)')
-    def _cost_rel_minibatch_numba(theta, eefs_targ, loceventixs, loc_slicers, wts, locs_mb, k=1.):
+    def _cost_rel_mb_nb(theta, eefs_targ, loceventixs, loc_slicers, wts, locs_mb, k=1.):
         """Cost function for fitting an ELT to a target EEF by adjusting
         event rates. Cost function is based on relative (percentage) errors.
         This function implements mini-batching.
@@ -454,7 +474,7 @@ class ELTRateAdjustment:
         locs_mb : ndarray
             Indices of the locations in this mini-batch.
         k : float, optional
-            Annealing parameter.
+            Annealing parameter - not used, kept for API consistency.
 
         Returns
         -------
@@ -490,11 +510,12 @@ class ELTRateAdjustment:
             eefs_pred[a:b] = rates[a:b].cumsum()
             deltas[a:b] = eefs_pred[a:b]/eefs_targ[a:b] - 1
             cost += (wts[a:b] * deltas[a:b]**2).sum()
-            grad_cost[loceventixs[a:b]] += 2*deltas[a:b][::-1].cumsum()[::-1]*wts_r[a:b]/eefs_targ[a:b]
+            dg = 2*deltas[a:b][::-1].cumsum()[::-1]*wts_r[a:b]/eefs_targ[a:b]
+            grad_cost[loceventixs[a:b]] += dg
 
         return cost, grad_cost, deltas, eefs_pred
 
-    def _cost_abs_minibatch(self, theta, eefs_targ, locs_mb, k=1.):
+    def _cost_abs_mb(self, theta, eefs_targ, locs_mb, k=1.):
         """Cost function for fitting an ELT to a target EEF by adjusting
         event rates. Cost function is based on absolute errors.
         This function implements mini-batching.
@@ -509,7 +530,7 @@ class ELTRateAdjustment:
         locs_mb : ndarray
             Indices of the locations in this mini-batch.
         k : float, optional
-            Annealing parameter.
+            Annealing parameter - not used, kept for API consistency.
 
         Returns
         -------
@@ -545,14 +566,15 @@ class ELTRateAdjustment:
             eefs_pred[a:b] = rates[a:b].cumsum()
             deltas[a:b] = eefs_pred[a:b] - eefs_targ[a:b]
             cost += (wts[a:b] * deltas[a:b]**2).sum()
-            grad_cost[self.loceventixs[a:b]] += 2*deltas[a:b][::-1].cumsum()[::-1]*wts[a:b]
+            dg = 2*deltas[a:b][::-1].cumsum()[::-1]*wts[a:b]
+            grad_cost[self.loceventixs[a:b]] += dg
 
         return cost, grad_cost, deltas, eefs_pred
 
     @staticmethod
     @nb.njit('Tuple((float64,float64[:],float64[:],float64[:]))' \
              '(float64[:],float64[:],int64[:],int64[:,:],float64[:],int64[:],float64)')
-    def _cost_abs_minibatch_numba(theta, eefs_targ, loceventixs, loc_slicers, wts, locs_mb, k=1.):
+    def _cost_abs_mb_nb(theta, eefs_targ, loceventixs, loc_slicers, wts, locs_mb, k=1.):
         """Cost function for fitting an ELT to a target EEF by adjusting
         event rates. Cost function is based on absolute errors.
         This function implements mini-batching.
@@ -567,7 +589,7 @@ class ELTRateAdjustment:
         locs_mb : ndarray
             Indices of the locations in this mini-batch.
         k : float, optional
-            Annealing parameter.
+            Annealing parameter - not used, kept for API consistency.
 
         Returns
         -------
@@ -603,6 +625,7 @@ class ELTRateAdjustment:
             eefs_pred[a:b] = rates[a:b].cumsum()
             deltas[a:b] = eefs_pred[a:b] - eefs_targ[a:b]
             cost += (wts[a:b] * deltas[a:b]**2).sum()
-            grad_cost[loceventixs[a:b]] += 2*deltas[a:b][::-1].cumsum()[::-1]*wts_r[a:b]
+            dg = 2*deltas[a:b][::-1].cumsum()[::-1]*wts_r[a:b]
+            grad_cost[loceventixs[a:b]] += dg
 
         return cost, grad_cost, deltas, eefs_pred
