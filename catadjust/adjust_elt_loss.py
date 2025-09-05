@@ -3,7 +3,6 @@
 
 import numpy as np
 import pandas as pd
-import scipy.special as ss
 from .optimisers import adam, adam_mb
 
 try:
@@ -35,17 +34,17 @@ class ELTLossAdjustment:
             Name of column containing event-location loss.
         """
 
-        # Load ELT to be adjusted and pre-process
+        # Load ELT to be adjusted, convert datatypes, drop duplicates and sort
         elt = elt_raw.astype({loccol: str, eventcol: np.int64,
                               ratecol: np.float64, refcol: np.float64}
-                            ).drop_duplicates([loccol, eventcol]
-                                             ).sort_values([loccol, refcol],
-                                                           ascending=[True, False]).dropna()
+                              ).drop_duplicates([loccol, eventcol]).dropna()
+        elt = elt.sort_values([loccol, refcol], ascending=[True, False])
 
         # Mapping from locationIDs to internal locids
         locations = elt[loccol].unique()
         locids = np.arange(locations.size, dtype=np.int64)
-        elt['_locid'] = elt[loccol].map(dict(zip(locations, locids)))
+        self.locmap = dict(zip(locations, locids))
+        elt['_locid'] = elt[loccol].map(self.locmap)
 
         self.loccol = loccol
         self.eventcol = eventcol
@@ -68,7 +67,11 @@ class ELTLossAdjustment:
                                       np.r_[locbreaks, m][:,None]])
 
         # Maximum EEFs in ELT by location - use to make mask for cost function
-        self.max_eefs = self.elt.groupby('_locid', sort=False)['eef'].max().values[:,None]
+        self.max_eefs = self.elt.groupby('_locid', sort=False
+                                         )['eef'].max().values[:,None]
+
+    def expit(self, x):
+        return np.exp(-np.logaddexp(0, -x))
 
     def calc_eef(self, elt):
         """Calculate EEFs from a location-level ELT sorted by descending hazard.
@@ -76,7 +79,7 @@ class ELTLossAdjustment:
         Parameters
         ----------
         elt : DataFrame
-            Processed and sorted (in descending hazard intensity) location-level ELT.
+            Processed and sorted (in descending hazard intensity) ELT.
 
         Returns
         -------
@@ -84,20 +87,22 @@ class ELTLossAdjustment:
             Input ELT with additional EEF column.
         """
 
-        elt['eef'] = elt.groupby('_locid', sort=False)[self.ratecol].transform('cumsum')
+        elt['eef'] = elt.groupby('_locid', sort=False
+                                 )[self.ratecol].transform('cumsum')
         return elt
 
-    def adjust(self, loss_targ, eefs_targ, x0=None, nepochs=1_000, batch_size=0, ftol=1e-6,
-               alpha=0.001, beta1=0.9, beta2=0.999, relative=False, seed=42, min_loss_fac=0,
-               max_loss_fac=np.inf, wts=None, k0=-1, k1=1, annealing_schedule='log', use_numba=_use_numba):
+    def adjust(self, loss_targ, eefs_targ, x0=None, nepochs=1_000, batch_size=0,
+               ftol=1e-6, alpha=0.001, beta1=0.9, beta2=0.999, relative=False,
+               seed=42, min_loss_fac=0, max_loss_fac=np.inf, wts=None, k0=-1,
+               k1=1, annealing_schedule='log', tol=15, use_numba=_use_numba):
         """Adjust ELT losses to match location-level loss EEF curves.
 
         Parameters
         ----------
-        loss_targ : Series or ndarray
-            Target losses.
-        eefs_targ : Series or ndarray
-            Target EEFs.
+        loss_targ : ndarray
+            Target losses in an (m, n) array for m locations and n target EEFs.
+        eefs_targ : ndarray
+            Target EEFs in (n,) array.
         x0 : Series or ndarray, optional
             Initial guess to use for loss adjustment.
         nepochs : int, optional
@@ -122,14 +127,17 @@ class ELTLossAdjustment:
         max_loss_fac : float, optional
             Maximum allowable loss factor constraint.
         wts : ndarray, optional
-            User-defined weights to apply to each location-event. By default,
-            locations are equally weighted.
+            Weights to apply to each location-target loss. Should be the same
+            shape as loss_targ. Locations are equally weighted by default.
         k0 : float, optional
             Log10 of initial annealing parameter.
         k1 : float, optional
             Log10 of final annealing parameter.
         annealing_schedule : str, optional
             Annealing schedule. One of log, lin, cos.
+        tol : float, optional
+            Tolerance used to mask out inputs to logistic function to speed up
+            calculations on the distance matrix in cost functions.
         use_numba : boolean, optional
             Whether to use numba for a ~50-100% speedup.
 
@@ -148,6 +156,7 @@ class ELTLossAdjustment:
 
         # Only count costs where EEF is valid and target losses are >=0
         cost_mask = (self.max_eefs >= eefs_targ) & (loss_targ >= 0)
+        self.cost_mask = cost_mask
 
         # Best initial guess for loss scaling factors
         if x0 is None:
@@ -157,7 +166,8 @@ class ELTLossAdjustment:
         self.x0 = x0
 
         if wts is None:
-            self.wts = np.ones_like(loss_targ, dtype=np.float64)/np.prod(loss_targ.shape)
+            self.wts = np.ones_like(loss_targ, dtype=np.float64
+                                    )/np.prod(loss_targ.shape)
         else:
             self.wts = np.array(wts, dtype=np.float64)/np.sum(wts)
 
@@ -168,54 +178,58 @@ class ELTLossAdjustment:
             stoc_args = {'nrecs': nlocs, 'rng': rng, 'batch_size': batch_size}
 
         # Create dict to pass arguments for the optimiser
-        opt_args = {'alpha': alpha, 'beta1': beta1, 'beta2': beta2, 'nepochs': nepochs,
-                    'ftol': ftol, 'amin': min_loss_fac, 'amax': max_loss_fac,
-                    'k0': k0, 'k1': k1, 'annealing_schedule': annealing_schedule}
+        opt_args = {'alpha': alpha, 'beta1': beta1, 'beta2': beta2,
+                    'nepochs': nepochs, 'ftol': ftol, 'amin': min_loss_fac,
+                    'amax': max_loss_fac, 'k0': k0, 'k1': k1,
+                    'annealing_schedule': annealing_schedule}
 
         if not use_numba:
-            cost_args = (loss_targ, eefs_targ, cost_mask)
+            cost_args = (loss_targ, eefs_targ, cost_mask, tol)
             if batch_size > 0:
-                # TODO NOT IMPLEMENTED YET ===========================================================================
-                #cost = self._cost_rel_minibatch if relative else self._cost_abs_minibatch
+                # TODO NOT IMPLEMENTED YET ======================================
+                #cost = self._cost_rel_mb if relative else self._cost_abs_mb
                 #optimise = adam_mb
                 #opt_args = {**opt_args, **stoc_args}
                 print('Minibatch not yet implemented - reverting to batch')
                 cost = self._cost_rel if relative else self._cost_abs
                 optimise = adam
-                # /TODO NOT IMPLEMENTED YET ===========================================================================
+                # /TODO NOT IMPLEMENTED YET =====================================
             else:
                 cost = self._cost_rel if relative else self._cost_abs
                 optimise = adam
         else:
             loss = self.elt[self.refcol].values
             rates = self.elt[self.ratecol].values
-            cost_args = (loss_targ, eefs_targ, cost_mask, loss, rates, self.loceventixs, self.loc_slicers, self.wts)
+            cost_args = (loss_targ, eefs_targ, cost_mask, loss, rates,
+                         self.loceventixs, self.loc_slicers, self.wts, tol)
             if batch_size > 0:
-                # TODO NOT IMPLEMENTED YET ===========================================================================
-                #cost = self._cost_rel_minibatch_numba if relative else self._cost_abs_minibatch_numba
+                # TODO NOT IMPLEMENTED YET ======================================
+                #cost = self._cost_rel_mb_nb if relative else self._cost_abs_mb_nb
                 #optimise = adam_mb
                 #opt_args = {**opt_args, **stoc_args}
-                # /TODO NOT IMPLEMENTED YET ===========================================================================
-                print('Minibatch+numba not yet implemented - reverting to batch+numba')
-                cost = self._cost_rel_numba if relative else self._cost_abs_numba
+                # /TODO NOT IMPLEMENTED YET =====================================
+                print('Minibatch+numba not yet implemented - using batch+numba')
+                cost = self._cost_rel_nb if relative else self._cost_abs_nb
                 optimise = adam
             else:
-                cost = self._cost_rel_numba if relative else self._cost_abs_numba
+                cost = self._cost_rel_nb if relative else self._cost_abs_nb
                 optimise = adam
 
         # Do the optimisation
         res, fs = optimise(cost, x0, cost_args, **opt_args)
 
         # Post-processing of results
-        self.theta = pd.Series(res['x'], index=pd.Index(self.eventIDs, name=self.eventcol))
+        event_ix = pd.Index(self.eventIDs, name=self.eventcol)
+        self.theta = pd.Series(res['x'], index=event_ix)
         elt_adj = self.elt.copy()
-        elt_adj[self.refcol] = res['x'][self.loceventixs] * self.elt[self.refcol]
-        elt_adj = elt_adj.sort_values([self.loccol, self.refcol], ascending=[True, False])
+        elt_adj[self.refcol] = res['x'][self.loceventixs]*self.elt[self.refcol]
+        elt_adj = elt_adj.sort_values([self.loccol, self.refcol],
+                                      ascending=[True, False])
         elt_adj = self.calc_eef(elt_adj)
         elt_adj['rp'] = 1/(1-np.exp(-elt_adj['eef']))
         return elt_adj, res, fs
 
-    def _cost_rel(self, theta, loss_targ, eefs_targ, cost_mask, k=1.):
+    def _cost_rel(self, theta, loss_targ, eefs_targ, cost_mask, tol=20, k=1.):
         """Cost function for fitting an ELT to a target EEF by adjusting
         event losses. Cost function is based on relative (percentage) errors.
 
@@ -232,6 +246,9 @@ class ELTLossAdjustment:
             Boolean mask to use only delta values at location-EEF combinations
             where the target EEF is less than or equal to the largest EEF in
             the ELT at that location.
+        tol : float, optional
+            Tolerance used to mask out inputs to logistic function to speed up
+            calculations on the distance matrix.
         k : float, optional
             Logistic function scale parameter (or growth rate), governing the
             smoothness of the continuous approximation to the EEF function.
@@ -260,23 +277,28 @@ class ELTLossAdjustment:
 
         # Loop over locations and calculate EEFs
         for i, (a, b) in enumerate(self.loc_slicers):
-            loss_ab, loss_pred_ab, rates_ab = loss[a:b], loss_pred[a:b], rates[a:b]
+            loss_ab, loss_pred_ab = loss[a:b], loss_pred[a:b]
+            rates_ab = rates[a:b]
 
-            # Calculate logistic function of 'distance matrix' of target and predicted
-            dmat = loss_targ[i][:,None] - loss_pred_ab
-            logistic = ss.expit(k*dmat)
+            # Logistic function of 'distance matrix' of target and predicted
+            dmat = k*(loss_targ[i][:,None] - loss_pred_ab)
+            logistic = np.zeros_like(dmat, dtype=np.float64)
+            logistic[dmat>=tol] = 1
+            mask = (dmat>-tol) & (dmat<tol)
+            logistic[mask] = self.expit(dmat[mask])
 
             # Calculate predicted EEFs, deltas and cost function gradient
-            eefs_pred[i,:] = rates_ab.sum() - (rates_ab*logistic).sum(axis=1)
-            deltas[i,:] = np.where(cost_mask[i], eefs_pred[i,:]/eefs_targ - 1, 0)
-            partial_i =  rates_ab * loss_ab * logistic * (1-logistic)/eefs_targ[:,None]
-            grad_cost[self.loceventixs[a:b]] += 2*k*((self.wts[i]*deltas[i])[:,None]*partial_i).sum(axis=0)
+            eefs_pred[i,:] = rates_ab.sum() - logistic @ rates_ab
+            deltas[i,:] = np.where(cost_mask[i], eefs_pred[i,:]/eefs_targ-1, 0)
+            partial_i = rates_ab*loss_ab*logistic*(1-logistic)/eefs_targ[:,None]
+            dg = 2*k*((self.wts[i]*deltas[i])[:,None]*partial_i).sum(axis=0)
+            grad_cost[self.loceventixs[a:b]] += dg
 
         # Calculate cost function and gradient for current parameters
         cost = (self.wts * deltas**2).sum()
         return cost, grad_cost, deltas, eefs_pred
 
-    def _cost_abs(self, theta, loss_targ, eefs_targ, cost_mask, k=1.):
+    def _cost_abs(self, theta, loss_targ, eefs_targ, cost_mask, tol=20, k=1.):
         """Cost function for fitting an ELT to a target EEF by adjusting
         event losses. Cost function is based on absolute errors.
 
@@ -293,6 +315,9 @@ class ELTLossAdjustment:
             Boolean mask to use only delta values at location-EEF combinations
             where the target EEF is less than or equal to the largest EEF in
             the ELT at that location.
+        tol : float, optional
+            Tolerance used to mask out inputs to logistic function to speed up
+            calculations on the distance matrix.
         k : float, optional
             Logistic function scale parameter (or growth rate), governing the
             smoothness of the continuous approximation to the EEF function.
@@ -321,17 +346,22 @@ class ELTLossAdjustment:
 
         # Loop over locations and calculate EEFs
         for i, (a, b) in enumerate(self.loc_slicers):
-            loss_ab, loss_pred_ab, rates_ab = loss[a:b], loss_pred[a:b], rates[a:b]
+            loss_ab, loss_pred_ab = loss[a:b], loss_pred[a:b]
+            rates_ab = rates[a:b]
 
-            # Calculate logistic function of 'distance matrix' of target and predicted
-            dmat = loss_targ[i][:,None] - loss_pred_ab
-            logistic = ss.expit(k*dmat)
+            # Logistic function of 'distance matrix' of target and predicted
+            dmat = k*(loss_targ[i][:,None] - loss_pred_ab)
+            logistic = np.zeros_like(dmat, dtype=np.float64)
+            logistic[dmat>=tol] = 1
+            mask = (dmat>-tol) & (dmat<tol)
+            logistic[mask] = self.expit(dmat[mask])
 
             # Calculate predicted EEFs, deltas and cost function gradient
             eefs_pred[i,:] = rates_ab.sum() - (rates_ab*logistic).sum(axis=1)
             deltas[i,:] = np.where(cost_mask[i], eefs_pred[i,:] - eefs_targ, 0)
-            partial_i =  rates_ab * loss_ab * logistic * (1-logistic)
-            grad_cost[self.loceventixs[a:b]] += 2*k*((self.wts[i]*deltas[i])[:,None]*partial_i).sum(axis=0)
+            partial_i =  rates_ab*loss_ab*logistic*(1-logistic)
+            dg =  2*k*((self.wts[i]*deltas[i])[:,None]*partial_i).sum(axis=0)
+            grad_cost[self.loceventixs[a:b]] += dg
 
         # Calculate cost function and gradient for current parameters
         cost = (self.wts * deltas**2).sum()
@@ -340,9 +370,9 @@ class ELTLossAdjustment:
     @staticmethod
     @nb.njit('Tuple((float64,float64[:],float64[:,:],float64[:,:]))' \
              '(float64[:],float64[:,:],float64[:],boolean[:,:],float64[:],' \
-             'float64[:],int64[:],int64[:,:],float64[:,:],float64)')
-    def _cost_rel_numba(theta, loss_targ, eefs_targ, cost_mask, loss, rates,
-                        loceventixs, loc_slicers, wts, k=1.):
+             'float64[:],int64[:],int64[:,:],float64[:,:],float64,float64)')
+    def _cost_rel_nb(theta, loss_targ, eefs_targ, cost_mask, loss, rates,
+                     loceventixs, loc_slicers, wts, tol=20., k=1.):
         """Cost function for fitting an ELT to a target EEF by adjusting
         event losses. Cost function is based on relative (percentage) errors.
 
@@ -392,17 +422,19 @@ class ELTLossAdjustment:
 
         # Loop over locations and calculate EEFs
         for i, (a, b) in enumerate(loc_slicers):
-            loss_ab, loss_pred_ab, rates_ab = loss[a:b], loss_pred[a:b], rates[a:b]
+            loss_ab, loss_pred_ab  = loss[a:b], loss_pred[a:b]
+            rates_ab = rates[a:b]
 
-            # Calculate logistic function of 'distance matrix' of target and predicted
-            dmat = loss_targ[i][:,None] - loss_pred_ab
-            logistic = expit(k*dmat)
+            # Logistic function of 'distance matrix' of target and predicted
+            dmat = k*(loss_targ[i][:,None] - loss_pred_ab)
+            logistic = expit(dmat)
 
             # Calculate predicted EEFs, deltas and cost function gradient
             eefs_pred[i,:] = rates_ab.sum() - (rates_ab*logistic).sum(axis=1)
-            deltas[i,:] = np.where(cost_mask[i], eefs_pred[i,:]/eefs_targ - 1, 0)
-            partial_i =  rates_ab * loss_ab * logistic * (1-logistic)/eefs_targ[:,None]
-            grad_cost[loceventixs[a:b]] += 2*k*((wts[i]*deltas[i])[:,None]*partial_i).sum(axis=0)
+            deltas[i,:] = np.where(cost_mask[i], eefs_pred[i,:]/eefs_targ-1, 0)
+            partial_i = rates_ab*loss_ab*logistic*(1-logistic)/eefs_targ[:,None]
+            dg = 2*k*((wts[i]*deltas[i])[:,None]*partial_i).sum(axis=0)
+            grad_cost[loceventixs[a:b]] += dg
 
         # Calculate cost function and gradient for current parameters
         cost = (wts * deltas**2).sum()
@@ -411,9 +443,9 @@ class ELTLossAdjustment:
     @staticmethod
     @nb.njit('Tuple((float64,float64[:],float64[:,:],float64[:,:]))' \
              '(float64[:],float64[:,:],float64[:],boolean[:,:],float64[:],' \
-             'float64[:],int64[:],int64[:,:],float64[:,:],float64)')
-    def _cost_abs_numba(theta, loss_targ, eefs_targ, cost_mask, loss, rates,
-                        loceventixs, loc_slicers, wts, k=1.):
+             'float64[:],int64[:],int64[:,:],float64[:,:],float64,float64)')
+    def _cost_abs_nb(theta, loss_targ, eefs_targ, cost_mask, loss, rates,
+                     loceventixs, loc_slicers, wts, tol=20, k=1.):
         """Cost function for fitting an ELT to a target EEF by adjusting
         event losses. Cost function is based on absolute errors.
 
@@ -463,17 +495,19 @@ class ELTLossAdjustment:
 
         # Loop over locations and calculate EEFs
         for i, (a, b) in enumerate(loc_slicers):
-            loss_ab, loss_pred_ab, rates_ab = loss[a:b], loss_pred[a:b], rates[a:b]
+            loss_ab, loss_pred_ab = loss[a:b], loss_pred[a:b]
+            rates_ab = rates[a:b]
 
-            # Calculate logistic function of 'distance matrix' of target and predicted
-            dmat = loss_targ[i][:,None] - loss_pred_ab
-            logistic = expit(k*dmat)
+            # Logistic function of 'distance matrix' of target and predicted
+            dmat = k*(loss_targ[i][:,None] - loss_pred_ab)
+            logistic = expit(dmat)
 
             # Calculate predicted EEFs, deltas and cost function gradient
             eefs_pred[i,:] = rates_ab.sum() - (rates_ab*logistic).sum(axis=1)
             deltas[i,:] = np.where(cost_mask[i], eefs_pred[i,:] - eefs_targ, 0)
-            partial_i =  rates_ab * loss_ab * logistic * (1-logistic)
-            grad_cost[loceventixs[a:b]] += 2*k*((wts[i]*deltas[i])[:,None]*partial_i).sum(axis=0)
+            partial_i = rates_ab*loss_ab*logistic*(1-logistic)
+            dg = 2*k*((wts[i]*deltas[i])[:,None]*partial_i).sum(axis=0)
+            grad_cost[loceventixs[a:b]] += dg
 
         # Calculate cost function and gradient for current parameters
         cost = (wts * deltas**2).sum()
