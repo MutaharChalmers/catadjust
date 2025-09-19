@@ -86,7 +86,7 @@ def getELT_ratescheme_stoc(server, rdm_db, anlsid, perspcode, rateschemeid,
 
     # Retrieve ELT
     query = f"""SELECT a.ANLSID, a.ID, a.EVENTID, a.PERSPCODE, a.PERSPVALUE,
-                a.STDDEVC, a.STDDEVI, a.EXPVALUE, d.RATE, c.TYPE, c.NAME,
+                a.STDDEVC, a.STDDEVI, a.EXPVALUE, e.RATE, c.TYPE, c.NAME,
                 c.DESCRIPTION, c.ACTIVE, d.NAME as ANLSNAME FROM RDM_PORT a 
                 INNER JOIN RDM_ANLSEVENT b ON a.ANLSID=b.ANLSID AND
                 a.EVENTID=b.EVENTID
