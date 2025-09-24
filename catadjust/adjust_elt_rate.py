@@ -83,17 +83,16 @@ class ELTRateAdjustment:
                                  )[self.ratecol].transform('cumsum')
         return elt
 
-    def adjust(self, ref_targ, eefs_targ, x0=None, nepochs=100, batch_size=0,
-               ftol=1e-3, alpha=0.001, beta1=0.9, beta2=0.999, relative=True,
-               seed=42, min_rate=1e-6, max_rate=np.inf, wts=None,
-               use_numba=_use_numba):
+    def adjust(self, targ, eefs, x0=None, nepochs=100, batch_size=0, ftol=1e-3,
+               alpha=1e-3, beta1=0.9, beta2=0.999, relative=True, seed=42,
+               min_rate=1e-18, max_rate=np.inf, wts=None, use_numba=_use_numba):
         """Adjust ELT rates to match location-level loss or hazard EEF curves.
 
         Parameters
         ----------
-        ref_targ : ndarray
+        targ : ndarray
             Target hazard or losses in an (m locations, n target EEFs) array.
-        eefs_targ : ndarray
+        eefs : ndarray
             Target EEFs in (n,) array.
         x0 : Series or ndarray, optional
             Initial guess to use for rate adjustment.
@@ -119,8 +118,8 @@ class ELTRateAdjustment:
         max_rate : float, optional
             Maximum allowable rate constraint.
         wts : ndarray, optional
-            User-defined weights to apply to each location-event. By default,
-            locations are equally weighted.
+            Weights to apply to each location-event. Should be the same shape as
+            targ. By default, locations are equally weighted.
         use_numba : boolean, optional
             Whether to use numba for a ~50-100% speedup.
 
@@ -130,12 +129,23 @@ class ELTRateAdjustment:
             Adjusted ELT.
         res : dict
             Results dict.
-        fs : ndarray
-            Learning curve.
         """
 
+        # Input validation
+        # Check that targ is increasing along axis 1
+        if len(targ.shape) != 2 or (targ[:,:-1] > targ[:,1:]).any():
+            print('targ must be 2D and in increasing order along axis 1')
+            return None
+
+        # Check that eefs is 1D, decreasing and is the same size as targ axis 1
+        if (len(eefs.shape) != 1 or eefs.shape[0] != targ.shape[1] or
+            (eefs[:-1] <= eefs[1:]).all()):
+            print('eefs must be 1D, the same length as axis 1 of targ, '
+                  'and sorted in decreasing order')
+            return None
+
         # Interpolate input target EEFs to all rows of ELT
-        eefs_targ = [np.interp(x[self.refcol], ref_targ[i], eefs_targ)
+        eefs_targ = [np.interp(x[self.refcol], targ[i], eefs)
                      for i, x in self.elt.groupby('_locid')]
         eefs_targ = np.concatenate(eefs_targ)
 
@@ -156,13 +166,11 @@ class ELTRateAdjustment:
 
         if wts is None:
             # Default weights are uniform
-            wts = np.where(rates_loc[self.ratecol].values>0,
-                           np.ones_like(eefs_targ), 0)
-        else:
-            # As weights are passed by location and target EEF, need to convert
-            wts = [np.interp(x[self.refcol], ref_targ[i], wts[i], left=0, right=0)
+            wts = np.ones_like(targ)
+
+        wts = [np.interp(x[self.refcol], targ[i], wts[i], left=0, right=0)
                    for i, x in self.elt.groupby('_locid')]
-            wts = np.concatenate(wts)
+        wts = np.concatenate(wts)
         self.wts = np.array(wts, dtype=np.float64)/np.sum(wts)
 
         # Create RNG object for SGD and mini-batch SGD
@@ -196,7 +204,8 @@ class ELTRateAdjustment:
                 optimise = adam
 
         # Do the optimisation
-        res, fs = optimise(cost, self.x0, cost_args, **opt_args)
+        res = optimise(cost, self.x0, cost_args, **opt_args)
+        res['eventIDs'] = self.eventIDs
 
         # Post-processing of results
         event_ix = pd.Index(self.eventIDs, name=self.eventcol)
@@ -208,7 +217,7 @@ class ELTRateAdjustment:
         elt_adj['eef_targ'] = eefs_targ
         elt_adj['delta'] = res['deltas']
         elt_adj['wt'] = self.wts
-        return elt_adj, res, fs
+        return elt_adj, res
 
     def _cost_rel(self, theta, eefs_targ, k=1.):
         """Cost function for fitting an ELT to a target EEF by adjusting
@@ -333,6 +342,7 @@ class ELTRateAdjustment:
 
         # Calculate EEFs for each location by chunked cumulative sums
         eefs_pred = np.empty_like(eefs_targ)
+
 
         # Expand event rates to event-location rates
         rates = theta[loceventixs]

@@ -94,7 +94,7 @@ class ELTLossAdjustment:
     def adjust(self, loss_targ, eefs_targ, x0=None, nepochs=1_000, batch_size=0,
                ftol=1e-6, alpha=0.001, beta1=0.9, beta2=0.999, relative=False,
                seed=42, min_loss_fac=0, max_loss_fac=np.inf, wts=None, k0=-1,
-               k1=1, annealing_schedule='log', tol=15, use_numba=_use_numba):
+               k1=1, annealing='log', tol=15, use_numba=_use_numba):
         """Adjust ELT losses to match location-level loss EEF curves.
 
         Parameters
@@ -133,7 +133,7 @@ class ELTLossAdjustment:
             Log10 of initial annealing parameter.
         k1 : float, optional
             Log10 of final annealing parameter.
-        annealing_schedule : str, optional
+        annealing : str, optional
             Annealing schedule. One of log, lin, cos.
         tol : float, optional
             Tolerance used to mask out inputs to logistic function to speed up
@@ -147,9 +147,20 @@ class ELTLossAdjustment:
             Adjusted ELT.
         res : dict
             Results dict.
-        fs : ndarray
-            Learning curve.
         """
+
+        # Input validation
+        # Check that targ is increasing along axis 1
+        if len(loss_targ.shape)!=2 or (loss_targ[:,:-1]>loss_targ[:,1:]).any():
+            print('loss_targ must be 2D and in increasing order along axis 1')
+            return None
+
+        # Check that eefs is 1D, decreasing and is the same size as targ axis 1
+        if (len(eefs_targ.shape)!=1 or eefs_targ.shape[0]!=loss_targ.shape[1] or
+            (eefs_targ[:-1]<=eefs_targ[1:]).all()):
+            print('eefs must be 1D, the same length as axis 1 of targ, '
+                  'and in decreasing order')
+            return None
 
         loss_targ = np.array(loss_targ, dtype=np.float64)
         eefs_targ = np.array(eefs_targ, dtype=np.float64)
@@ -181,7 +192,7 @@ class ELTLossAdjustment:
         opt_args = {'alpha': alpha, 'beta1': beta1, 'beta2': beta2,
                     'nepochs': nepochs, 'ftol': ftol, 'amin': min_loss_fac,
                     'amax': max_loss_fac, 'k0': k0, 'k1': k1,
-                    'annealing_schedule': annealing_schedule}
+                    'annealing': annealing}
 
         if not use_numba:
             cost_args = (loss_targ, eefs_targ, cost_mask, tol)
@@ -216,7 +227,8 @@ class ELTLossAdjustment:
                 optimise = adam
 
         # Do the optimisation
-        res, fs = optimise(cost, x0, cost_args, **opt_args)
+        res = optimise(cost, x0, cost_args, **opt_args)
+        res['eventIDs'] = self.eventIDs
 
         # Post-processing of results
         event_ix = pd.Index(self.eventIDs, name=self.eventcol)
@@ -227,7 +239,7 @@ class ELTLossAdjustment:
                                       ascending=[True, False])
         elt_adj = self.calc_eef(elt_adj)
         elt_adj['rp'] = 1/(1-np.exp(-elt_adj['eef']))
-        return elt_adj, res, fs
+        return elt_adj, res
 
     def _cost_rel(self, theta, loss_targ, eefs_targ, cost_mask, tol=20, k=1.):
         """Cost function for fitting an ELT to a target EEF by adjusting
