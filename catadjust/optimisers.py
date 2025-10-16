@@ -5,7 +5,7 @@ import numpy as np
 from tqdm.auto import tqdm
 
 
-def adam(fun, x0, args=(), alpha=0.001, beta1=0.9, beta2=0.999, nepochs=100,
+def adam(fun, theta0, args=(), alpha=1e-3, beta1=0.9, beta2=0.999, nepochs=100,
          ftol=1e-3, amin=-np.inf, amax=np.inf, k0=0, k1=0, annealing='log'):
     """Adaptive Moment Estimation gradient descent.
 
@@ -13,7 +13,7 @@ def adam(fun, x0, args=(), alpha=0.001, beta1=0.9, beta2=0.999, nepochs=100,
     ----------
     fun : function
         Cost function which returns cost and gradient.
-    x0 : ndarray
+    theta0 : ndarray
         Initial values for optimisation.
     args : tuple, optional
         Arguments to be passed to cost function.
@@ -46,7 +46,7 @@ def adam(fun, x0, args=(), alpha=0.001, beta1=0.9, beta2=0.999, nepochs=100,
         gradient, number of iterations and learning curve.
     """
 
-    x, m, v = x0*1, 0, 0
+    x, m, v = theta0*1, 0, 0
     fs = np.zeros(nepochs)
     if 'log' in annealing.lower():
         ks = np.logspace(k0, k1, nepochs)
@@ -63,14 +63,14 @@ def adam(fun, x0, args=(), alpha=0.001, beta1=0.9, beta2=0.999, nepochs=100,
 
     pbar = tqdm(range(nepochs))
     for i in pbar:
-        fs[i], grad, deltas, _ = fun(x, *(args+(ks[i],)))
+        fs[i], grad, deltas, _ = fun(x, *(args+(None, ks[i],)))
 
         # Convergence checks
         if i >= 1:
             ftol_msg = f'f={fs[i]:.2e}{">" if fs[i] > ftol else "<="}{ftol:.2e}'
             pbar.set_description(f'{ftol_msg}')
             if fs[i] < ftol:
-                return dict(x=x, fun=fs[i], jac=grad, nit=i, deltas=deltas,
+                return dict(theta=x, fun=fs[i], jac=grad, nit=i, deltas=deltas,
                             annealing=ks, fs=fs[fs>0])
 
         # Estimates of first and second moment of gradient
@@ -87,21 +87,21 @@ def adam(fun, x0, args=(), alpha=0.001, beta1=0.9, beta2=0.999, nepochs=100,
         # Bound values
         x = np.clip(x, amin, amax)
 
-    f, grad, deltas, _ = fun(x, *(args+(ks[i],)))
+    f, grad, deltas, _ = fun(x, *(args+(None, ks[i],)))
     print('Iteration limit reached before cost function within tolerance')
-    return dict(x=x, fun=f, jac=grad, nit=i, deltas=deltas, annealing=ks,
+    return dict(theta=x, fun=f, jac=grad, nit=i, deltas=deltas, annealing=ks,
                 fs=fs[fs>0])
 
-def adam_mb(fun, x0, args=(), alpha=0.001, beta1=0.9, beta2=0.999, nepochs=100,
-            batch_size=0, rng=None, nrecs=1, ftol=1e-3, amin=-np.inf,
-            amax=np.inf, k0=0, k1=0, annealing='log'):
+def adam_mb(fun, theta0, args=(), alpha=1e-3, beta1=0.9, beta2=0.999,
+            nepochs=100, batch_size=0, rng=None, nrecs=1, ftol=1e-3,
+            amin=-np.inf, amax=np.inf, k0=0, k1=0, annealing='log'):
     """Adaptive Moment Estimation gradient descent for mini-batch/SGD.
 
     Parameters
     ----------
     fun : function
         Cost function which returns cost and gradient.
-    x0 : ndarray
+    theta0 : ndarray
         Initial values for optimisation.
     args : tuple, optional
         Arguments to be passed to cost function.
@@ -140,7 +140,7 @@ def adam_mb(fun, x0, args=(), alpha=0.001, beta1=0.9, beta2=0.999, nepochs=100,
         gradient, number of iterations and learning curve.
     """
 
-    x, m, v = x0*1, 0, 0
+    x, m, v = theta0*1, 0, 0
     fs = np.zeros(nepochs)
     nrecs_rng = np.arange(nrecs, dtype=np.int64)
 
@@ -190,11 +190,11 @@ def adam_mb(fun, x0, args=(), alpha=0.001, beta1=0.9, beta2=0.999, nepochs=100,
             ftol_msg = f'f={fs[i]:.2e}{">" if fs[i] > ftol else "<="}{ftol:.2e}'
             pbar.set_description(f'{ftol_msg}')
             if fs[i] < ftol:
-                return dict(x=x, fun=fs[i], jac=grad, nit=i, deltas=deltas,
+                return dict(theta=x, fun=fs[i], jac=grad, nit=i, deltas=deltas,
                             annealing=ks, fs=fs[fs>0])
 
     # Reevaluate cost function and gradient for all records
     f, grad, deltas, _ = fun(x, *(args+(nrecs_rng, ks[i])))
     print('Iteration limit reached before cost function within tolerance')
-    return dict(x=x, fun=f, jac=grad, nit=i, deltas=deltas, annealing=ks,
+    return dict(theta=x, fun=f, jac=grad, nit=i, deltas=deltas, annealing=ks,
                 fs=fs[fs>0])
