@@ -70,7 +70,8 @@ class ELTRateAdjustment:
         ----------
         target : DataFrame
             Target hazard or losses in an (m locations, n target EEFs) DataFrame
-            with EEFs as columns and the same locations in the index as the ELT.
+            with EEFs as columns and locations the index. The locations in the
+            index must be exactly the same ones as in the ELT.
         theta0 : Series or ndarray, optional
             Initial guess to use for rate adjustment.
         nepochs : int, optional
@@ -90,8 +91,8 @@ class ELTRateAdjustment:
             Minimum and maximum adjustment bounds. If scale is true, these are
             limiting rate scaling factors, otherwise these are absolute limits
             on the values the rates can take.
-        wts : ndarray, optional
-            Weights to apply to each location-event. Array with the same shape
+        wts : DataFrame, optional
+            Weights to apply to each location-EEF. Array with the same shape
             as targ. By default, locations are equally weighted.
         scale : bool, optional
             Optimise by scaling rates or not.
@@ -146,10 +147,13 @@ class ELTRateAdjustment:
             # Take differences between successive EEFs to estimate rates
             rates_targ_loc = np.diff(eefs_targ_loc)
             # np.diff on length n array returns n-1 values so add first rate
-            if rates_targ_loc[0] > 0:
-                r0 = eefs_targ_loc[0]
+            if rates_targ_loc.size > 0:
+                if rates_targ_loc[0] > 0:
+                    r0 = eefs_targ_loc[0]
+                else:
+                    r0 = 0.
             else:
-                r0 = 0.
+                r0 = eefs_targ_loc
             rates_targ_by_loc.append(np.r_[r0, rates_targ_loc])
         rates_targ_by_loc = np.concatenate(rates_targ_by_loc)
         rtl_df = pd.DataFrame({self.eventcol: self.elt[self.eventcol].values,
@@ -171,7 +175,11 @@ class ELTRateAdjustment:
         if wts is None:
             wts = np.ones_like(targ)
         else:
-            wts = np.array(wts)
+            if isinstance(wts, pd.DataFrame):
+                wts = wts.reindex(self._locmap.index).to_numpy()
+            else:
+                print('wts must be a DataFrame')
+                return None, None
 
         # Interpolate wts into ELT wrt hazard/loss
         wts = [np.interp(x[self.refcol], targ[i], wts[i], left=0, right=0)
