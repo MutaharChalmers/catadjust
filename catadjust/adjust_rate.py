@@ -6,17 +6,18 @@ import pandas as pd
 from .optimisers import adam, adam_mb
 
 
-class ELTRateAdjustment:
-    """Adjust a catastrophe model location-level ELT to match arbitrary target
-    location-level loss or hazard EEF curves by scaling event rates.
+class RateAdjustment:
+    """Adjust a catastrophe model location-level event loss table (ELT) or
+    event hazard table (EHT) to match arbitrary target location-level loss or
+    hazard EEF curves by scaling event rates.
     """
     def __init__(self, elt_raw, loccol, eventcol, ratecol, refcol):
-        """Load raw location-level ELT and pre-process.
+        """Load raw location-level ELT/EHT and pre-process.
 
         Parameters
         ----------
         elt_raw : DataFrame
-            Raw location-level ELT.
+            Raw location-level ELT/EHT.
         loccol: str
             Name of column containing locationIDs.
         eventcol: str
@@ -27,7 +28,7 @@ class ELTRateAdjustment:
             Name of column containing event-location loss or hazard intensity.
         """
 
-        # Load ELT to be adjusted, convert datatypes, drop duplicates and sort
+        # Load ELT/EHT, convert datatypes, drop duplicates and sort
         elt = elt_raw.astype({loccol: str, eventcol: np.int64,
                               ratecol: np.float64, refcol: np.float64}
                               ).drop_duplicates([loccol, eventcol]).dropna()
@@ -53,10 +54,10 @@ class ELTRateAdjustment:
         self.eventIDs = np.sort(self.elt[eventcol].unique())
         self.nevents = self.eventIDs.size
 
-        # Convert eventIDs in ELT to indices in event array
+        # Convert eventIDs in ELT/EHT to indices in event array
         self.loceventixs = np.searchsorted(self.eventIDs, self.elt[eventcol])
 
-        # Indices in ELT where location changes
+        # Indices in ELT/EHT where location changes
         locbreaks = np.nonzero(np.diff(self.elt['_locid']))[0] + 1
         self.loc_slicers = np.hstack([np.r_[0, locbreaks][:,None],
                                       np.r_[locbreaks, m][:,None]])
@@ -64,14 +65,14 @@ class ELTRateAdjustment:
     def adjust(self, target, theta0=None, nepochs=100, ftol=1e-3, alpha=1e-3,
                beta1=0.9, beta2=0.999, relative=True, adj_bnds=(1e-18, 1e3),
                wts=None, scale=False, log=False, batch_size=0, seed=42):
-        """Adjust ELT rates to match location-level loss or hazard EEF curves.
+        """Adjust rates to match location-level loss or hazard EEF curves.
 
         Parameters
         ----------
         target : DataFrame
             Target hazard or losses in an (m locations, n target EEFs) DataFrame
             with EEFs as columns and locations the index. The locations in the
-            index must be exactly the same ones as in the ELT.
+            index must be exactly the same ones as in the ELT/EHT.
         theta0 : Series or ndarray, optional
             Initial guess to use for rate adjustment.
         nepochs : int, optional
@@ -106,7 +107,7 @@ class ELTRateAdjustment:
         Returns
         -------
         elt_adj : DataFrame
-            Adjusted ELT.
+            Adjusted ELT/EHT.
         res : dict
             Results dict.
         """
@@ -116,15 +117,15 @@ class ELTRateAdjustment:
             print('target must be DataFrame')
             return None, None
     
-        # Check that every location in the ELT has a corresponding row in target
+        # Check that each location in the ELT/EHT corresponds to a row in target
         missing_targ_locs = set(self.locmap).symmetric_difference(target.index)
         if len(missing_targ_locs) > 0:
             locs_elt_not_target = list(set(self.locmap).difference(target.index))
             locs_target_not_elt = list(target.index.difference(self.locmap))
             if len(locs_elt_not_target) > 0:
-                print(f'ELT locations missing in target: {locs_elt_not_target}')
+                print(f'ELT/EHT locations missing in target: {locs_elt_not_target}')
             if len(locs_target_not_elt) > 0:
-                print(f'Target locations missing in ELT: {locs_target_not_elt}')
+                print(f'Target locations missing in ELT/EHT: {locs_target_not_elt}')
             return None, None
         
         # Extract numpy arrays from input targ DataFrame
@@ -136,7 +137,7 @@ class ELTRateAdjustment:
             print('targ values/columns must increase/decrease along axis 1')
             return None, None
 
-        # Interpolate input target EEFs to all rows of ELT
+        # Interpolate input target EEFs to all rows of ELT/EHT
         eefs_targ = np.concatenate([np.interp(x[self.refcol], targ[i], eefs)
                                     for i, x in self.elt.groupby('_locid')])
 
@@ -181,7 +182,7 @@ class ELTRateAdjustment:
                 print('wts must be a DataFrame')
                 return None, None
 
-        # Interpolate wts into ELT wrt hazard/loss
+        # Interpolate wts into ELT/EHT wrt hazard/loss
         wts = [np.interp(x[self.refcol], targ[i], wts[i], left=0, right=0)
                for i, x in self.elt.groupby('_locid')]
         wts = np.concatenate(wts)
@@ -234,7 +235,7 @@ class ELTRateAdjustment:
         res['loc_mse'] = tse/n   
         res.pop('annealing')   
 
-        # Create adjusted ELT DataFrame
+        # Create adjusted ELT/EHT DataFrame
         elt_adj = self.elt.copy()
         elt_adj[self.ratecol] = self.rates.values[self.loceventixs]
         elt_adj['eef'] = elt_adj.groupby('_locid', sort=False
@@ -247,7 +248,7 @@ class ELTRateAdjustment:
         return elt_adj, res
 
     def cost(self, theta, eefs_targ, relative, scale, log, locs_mb=None, k=1.):
-        """Cost function for fitting an ELT to a target EEF by adjusting
+        """Cost function for fitting an ELT/EHT to a target EEF by adjusting
         event rates. Cost function handles relative or absolute errors, direct
         rate adjustment, or optimisation by scaling factors, log space or not,
         and batch or minibatch.
@@ -258,7 +259,7 @@ class ELTRateAdjustment:
             Rates to calculate cost function for, in unique eventID order.
         eefs_targ : ndarray
             Target EEFs for location-events in the same order as the
-            pre-processed ELT.
+            pre-processed ELT/EHT.
         relative : bool
             Relative or absolute error cost function.
         scale : bool

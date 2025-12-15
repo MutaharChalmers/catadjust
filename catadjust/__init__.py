@@ -1,4 +1,4 @@
-from .adjust_elt_rate import ELTRateAdjustment
-from .adjust_elt_loss import ELTLossAdjustment
+from .adjust_rate import RateAdjustment
+from .adjust_loss import LossAdjustment
 
-__version__ = '0.6.3'
+__version__ = '0.6.4'

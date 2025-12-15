@@ -6,7 +6,7 @@ import pandas as pd
 from .optimisers import adam, adam_mb
 
 
-class ELTLossAdjustment:
+class LossAdjustment:
     """Adjust a catastrophe model location-level ELT to match arbitrary target
     location-level loss EEF curves by scaling event losses.
     """
