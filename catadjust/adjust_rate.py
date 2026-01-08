@@ -18,13 +18,13 @@ class RateAdjustment:
         ----------
         elt_raw : DataFrame
             Raw location-level ELT/EHT.
-        loccol: str
+        loccol : str
             Name of column containing locationIDs.
-        eventcol: str
+        eventcol : str
             Name of column containing eventIDs.
-        ratecol: str
+        ratecol : str
             Name of column containing event rates.
-        refcol: str
+        refcol : str
             Name of column containing event-location loss or hazard intensity.
         """
 

@@ -21,49 +21,49 @@ def adjust_elt(elt_ref, yelt_obj, year_range, RPmax, pct_obj, niter=1,
 
     Parameters
     ----------
-        elt_ref : DataFrame
-            Reference ELT.
-        yelt_obj : DataFrame
-            Objective YELT.
-        year_range : (int, int)
-            Range of years to be used from the objective YELT.
-        RPmax : float
-            Largest RP targeted for adjustment in the reference ELT.
-        pct_obj : (float, float)
-            Percentages of objective EP to use from RP1 to RP{RPmax}.
-            Weights are interpolated linearly with respect to RP. For example,
-            (100, 0) is suitable for the "adjust stochastic ELT to match a
-            historic YELT" use-case. In this case, 100% and 0% weights are given
-            to the objective (historic) at RPs 1 and RPmax respectively.
-        niter : int, optional
-            Number of iterations to do the adjustment over. Defaults to 1, which
-            replicates Automatic Adjustment Tool 'v1' behaviour. Higher values
-            take longer to compute but should generally give a closer match.
-        method : str, optional
-            Whether to use OEP or AEP as a target. Currently only OEP supported.
-        sesf_bounds : (float, float), optional
-            Minimum and maximum values to cap SESFs at.
-        pp : string
-            Plotting position estimation method. Must be 'weibull' or 'median'.
-        manual_RP : boolean, optional
-            Non-null values in column `RP` override calculated RPs.
-        Nq : int
-            Number of quantiles used to represent secondary uncertainty.
-            N_quantiles = 1 uses the mean only.
-        dist : str, optional
-            Distribution for secondary uncertainty. If an RMS ELT is detected,
-            automatically uses a beta distribution.
+    elt_ref : DataFrame
+        Reference ELT.
+    yelt_obj : DataFrame
+        Objective YELT.
+    year_range : (int, int)
+        Range of years to be used from the objective YELT.
+    RPmax : float
+        Largest RP targeted for adjustment in the reference ELT.
+    pct_obj : (float, float)
+        Percentages of objective EP to use from RP1 to RP{RPmax}.
+        Weights are interpolated linearly with respect to RP. For example,
+        (100, 0) is suitable for the "adjust stochastic ELT to match a
+        historic YELT" use-case. In this case, 100% and 0% weights are given
+        to the objective (historic) at RPs 1 and RPmax respectively.
+    niter : int, optional
+        Number of iterations to do the adjustment over. Defaults to 1, which
+        replicates Automatic Adjustment Tool 'v1' behaviour. Higher values
+        take longer to compute but should generally give a closer match.
+    method : str, optional
+        Whether to use OEP or AEP as a target. Currently only OEP supported.
+    sesf_bounds : (float, float), optional
+        Minimum and maximum values to cap SESFs at.
+    pp : string
+        Plotting position estimation method. Must be 'weibull' or 'median'.
+    manual_RP : boolean, optional
+        Non-null values in column `RP` override calculated RPs.
+    Nq : int
+        Number of quantiles used to represent secondary uncertainty.
+        N_quantiles = 1 uses the mean only.
+    dist : str, optional
+        Distribution for secondary uncertainty. If an RMS ELT is detected,
+        automatically uses a beta distribution.
 
     Returns
     -------
-        elt_adj : DataFrame
-            Adjusted ELT.
-        EP_adj : DataFrame
-            Adjusted EP losses.
-        AAL_adj : float
-            Adjusted AAL.
-        EP_targ : DataFrame
-            Target EP losses.
+    elt_adj : DataFrame
+        Adjusted ELT.
+    EP_adj : DataFrame
+        Adjusted EP losses.
+    AAL_adj : float
+        Adjusted AAL.
+    EP_targ : DataFrame
+        Target EP losses.
     """
 
     # Number of iterations; niter=1 equates to original behaviour
@@ -143,41 +143,41 @@ def adjust_yelt(yelt_ref, yelt_obj, year_range_ref, year_range_obj, RPmax,
 
     Parameters
     ----------
-        yelt_ref : DataFrame
-            Reference YELT.
-        yelt_obj : DataFrame
-            Objective YELT.
-        year_range_ref : (int, int)
-            Range of years to be used from the reference YELT.
-        year_range_obj : (int, int)
-            Range of years to be used from the objective YELT.
-        RPmax : float
-            Largest RP targeted for adjustment in the reference YELT.
-        pct_obj : (float, float)
-            Percentages of objective EP to use from RP1 to RP{RPmax}.
-            Weights are interpolated linearly with respect to RP. For example,
-            (100, 0) is suitable for the "adjust stochastic ELT to match a
-            historic YELT" use-case. In this case, 100% and 0% weights are given
-            to the objective (historic) at RPs 1 and RPmax respectively.
-        method : str, optional
-            Whether to use OEP only, or AEP (+OEP) as a target.
-        sesf_bounds : (float, float), optional
-            Minimum and maximum values to cap SESFs at.
-        pp : string
-            Plotting position estimation method. Must be 'weibull' or 'median'.
-        manual_RP : boolean, optional
-            Non-null values in column `RP` override calculated RPs.
+    yelt_ref : DataFrame
+        Reference YELT.
+    yelt_obj : DataFrame
+        Objective YELT.
+    year_range_ref : (int, int)
+        Range of years to be used from the reference YELT.
+    year_range_obj : (int, int)
+        Range of years to be used from the objective YELT.
+    RPmax : float
+        Largest RP targeted for adjustment in the reference YELT.
+    pct_obj : (float, float)
+        Percentages of objective EP to use from RP1 to RP{RPmax}.
+        Weights are interpolated linearly with respect to RP. For example,
+        (100, 0) is suitable for the "adjust stochastic ELT to match a
+        historic YELT" use-case. In this case, 100% and 0% weights are given
+        to the objective (historic) at RPs 1 and RPmax respectively.
+    method : str, optional
+        Whether to use OEP only, or AEP (+OEP) as a target.
+    sesf_bounds : (float, float), optional
+        Minimum and maximum values to cap SESFs at.
+    pp : string
+        Plotting position estimation method. Must be 'weibull' or 'median'.
+    manual_RP : boolean, optional
+        Non-null values in column `RP` override calculated RPs.
 
     Returns
     -------
-        yelt_adj : DataFrame
-            Adjusted YELT.
-        EP_adj : DataFrame
-            Adjusted EP losses.
-        AAL_adj : float
-            Adjusted AAL.
-        EP_targ : DataFrame
-            Target EP losses.
+    yelt_adj : DataFrame
+        Adjusted YELT.
+    EP_adj : DataFrame
+        Adjusted EP losses.
+    AAL_adj : float
+        Adjusted AAL.
+    EP_targ : DataFrame
+        Target EP losses.
     """
 
     # Calculate reference, object and target EPs
@@ -232,24 +232,24 @@ def calc_target_losses(EP_obj, EP_ref, RPmax, pct_obj):
 
     Parameters
     ----------
-        EP_obj : DataFrame
-            Table of objective (e.g. historic) losses and RPs.
-        EP_ref : DataFrame
-            Table of reference (e.g. stochastic) losses and RPs.
-        RPmax : int
-            Maximum RP to use for objective contribution. Points with
-            longer RP than this are 100% reference.
-        pct_obj : (float, float)
-            Percentages of objective EP to use from RP1 to RP{RPmax}.
-            Weights are interpolated linearly with respect to RP. Defaults to
-            (100, 0), which is suitable for the "adjust stochastic ELT to match
-            historic YELT" use-case. In this case, 100% and 0% weights are
-            given to the objective (historic) at RPs 1 and RPmax respectively.
+    EP_obj : DataFrame
+        Table of objective (e.g. historic) losses and RPs.
+    EP_ref : DataFrame
+        Table of reference (e.g. stochastic) losses and RPs.
+    RPmax : int
+        Maximum RP to use for objective contribution. Points with
+        longer RP than this are 100% reference.
+    pct_obj : (float, float)
+        Percentages of objective EP to use from RP1 to RP{RPmax}.
+        Weights are interpolated linearly with respect to RP. Defaults to
+        (100, 0), which is suitable for the "adjust stochastic ELT to match
+        historic YELT" use-case. In this case, 100% and 0% weights are
+        given to the objective (historic) at RPs 1 and RPmax respectively.
 
     Returns
     -------
-        targ : Series
-            Series of target losses interpolated to the reference RPs.
+    targ : Series
+        Series of target losses interpolated to the reference RPs.
     """
 
     # Interpolate objective losses and blending weights to reference RPs
@@ -268,15 +268,15 @@ def q2m(quantiles, cumprobs):
 
     Parameters
     ----------
-        quantiles : ndarray
-            Array of loss quantiles.
-        cumprobs : ndarray
-            Array of corresponding cumulative probabilities.
+    quantiles : ndarray
+        Array of loss quantiles.
+    cumprobs : ndarray
+        Array of corresponding cumulative probabilities.
 
     Returns
     -------
-        d : dict
-            Dictionary with keys mean and stddev, and corresponding values.
+    d : dict
+        Dictionary with keys mean and stddev, and corresponding values.
     """
     
     # Probability mass associated with each pair of successive quantiles
@@ -302,15 +302,15 @@ def q2m_logn(quantiles, cumprobs):
 
     Parameters
     ----------
-        quantiles : ndarray
-            Array of loss quantiles.
-        cumprobs : ndarray
-            Array of corresponding cumulative probabilities.
+    quantiles : ndarray
+        Array of loss quantiles.
+    cumprobs : ndarray
+        Array of corresponding cumulative probabilities.
 
     Returns
     -------
-        d : dict
-            Dictionary with keys mean and stddev and corresponding values.
+    d : dict
+        Dictionary with keys mean and stddev and corresponding values.
     """
 
     if quantiles.size > 1:
@@ -340,25 +340,25 @@ def fit_SESFs_ELT(tqs, elt_stoc, N_quantiles, sesf_bounds, dist=None):
 
     Parameters
     ----------
-        tqs : DataFrame
-            Target loss quantiles with Loss and RP columns, indexed by EventID.
-        elt_stoc : DataFrame
-            Stochastic ELT.
-        N_quantiles : int
-            Number of quantiles used to represent secondary uncertainty.
-            N_quantiles = 1 denotes using the mean value only.
-        sesf_bounds : (float, float)
-            Minimum and maximum values to cap SESFs at.
-        dist : str, optional
-            Distribution for secondary uncertainty. Generic approach used for
-            bounded distributions like beta (default). If secondary uncertainty
-            is unbounded (e.g. lognormal), use the specific distribtion option
-            for better fit. Currently only lognormal supported.
+    tqs : DataFrame
+        Target loss quantiles with Loss and RP columns, indexed by EventID.
+    elt_stoc : DataFrame
+        Stochastic ELT.
+    N_quantiles : int
+        Number of quantiles used to represent secondary uncertainty.
+        N_quantiles = 1 denotes using the mean value only.
+    sesf_bounds : (float, float)
+        Minimum and maximum values to cap SESFs at.
+    dist : str, optional
+        Distribution for secondary uncertainty. Generic approach used for
+        bounded distributions like beta (default). If secondary uncertainty
+        is unbounded (e.g. lognormal), use the specific distribtion option
+        for better fit. Currently only lognormal supported.
 
     Returns
     -------
-        sesfs : DataFrame
-            Table of SESFs.
+    sesfs : DataFrame
+        Table of SESFs.
     """
     
     if dist is None:
@@ -403,18 +403,18 @@ def calc_deltas(EP_adj, EP_targ, min_loss=1):
 
     Parameters
     ----------
-        EP_adj : DataFrame
-            Adjusted EP losses.
-        EP_targ : DataFrame
-            Target EP losses.
-        min_loss : float, optional
-            Minimum loss to consider - clip very small losses to this value
-            to avoid large relative differences between very small numbers.
+    EP_adj : DataFrame
+        Adjusted EP losses.
+    EP_targ : DataFrame
+        Target EP losses.
+    min_loss : float, optional
+        Minimum loss to consider - clip very small losses to this value
+        to avoid large relative differences between very small numbers.
 
     Returns
     -------
-        deltas : DataFrame
-            Table of differences, absolute and relativ (%), by RP.
+    deltas : DataFrame
+        Table of differences, absolute and relativ (%), by RP.
     """
 
     # Interpolate adjusted RP losses to target RP values for comparison    

@@ -10,24 +10,24 @@ def getELT_stoc(server, rdm_db, anlsid, perspcode, driver='SQL SERVER'):
     
     Parameters
     ----------
-        server : string
-            SQL Server with RDM.
-        rdm_db : string
-            Name of RDM.
-        anlsid : int
-            AnalysisID (ANLSID) required.
-        perspcode : string
-            Financial perspective code, e.g. GU, GR, CL.
-        driver : string, optional
-            SQL Server driver.
+    server : string
+        SQL Server with RDM.
+    rdm_db : string
+        Name of RDM.
+    anlsid : int
+        AnalysisID (ANLSID) required.
+    perspcode : string
+        Financial perspective code, e.g. GU, GR, CL.
+    driver : string, optional
+        SQL Server driver.
 
     Returns
     -------
-        elt_stoc : DataFrame
-            RMS ELT generated from RDM_PORT, RDM_ANLSEVENT and RDM_EVENTINFO
-            with the following named columns: 
-                ANLSID, PERSPCODE, PERSPVALUE, STDDEVC, STDDEVI, EXPVALUE, 
-                RATE, TYPE, NAME, DESCRIPTION, ACTIVE
+    elt_stoc : DataFrame
+        RMS ELT generated from RDM_PORT, RDM_ANLSEVENT and RDM_EVENTINFO
+        with the following named columns:
+            ANLSID, PERSPCODE, PERSPVALUE, STDDEVC, STDDEVI, EXPVALUE,
+            RATE, TYPE, NAME, DESCRIPTION, ACTIVE
     """
     
     # Connect to server and RDM database
@@ -57,26 +57,26 @@ def getELT_ratescheme_stoc(server, rdm_db, anlsid, perspcode, rateschemeid,
 
     Parameters
     ----------
-        server : string
-            SQL Server with RDM.
-        rdm_db : string
-            Name of RDM.
-        anlsid : int
-            AnalysisID (ANLSID) required.
-        perspcode : string
-            Financial perspective code, e.g. GU, GR, CL.
-        rateschemeid : string
-            Rate scheme ID.
-        driver : string, optional
-            SQL Server driver.
+    server : string
+        SQL Server with RDM.
+    rdm_db : string
+        Name of RDM.
+    anlsid : int
+        AnalysisID (ANLSID) required.
+    perspcode : string
+        Financial perspective code, e.g. GU, GR, CL.
+    rateschemeid : string
+        Rate scheme ID.
+    driver : string, optional
+        SQL Server driver.
 
     Returns
     -------
-        elt_stoc : DataFrame
-            RMS ELT generated from RDM_PORT, RDM_ANLSEVENT and RDM_EVENTINFO
-            with the following named columns: 
-                ANLSID, PERSPCODE, PERSPVALUE, STDDEVC, STDDEVI, EXPVALUE, 
-                RATE, TYPE, NAME, DESCRIPTION, ACTIVE
+    elt_stoc : DataFrame
+        RMS ELT generated from RDM_PORT, RDM_ANLSEVENT and RDM_EVENTINFO
+        with the following named columns:
+            ANLSID, PERSPCODE, PERSPVALUE, STDDEVC, STDDEVI, EXPVALUE,
+            RATE, TYPE, NAME, DESCRIPTION, ACTIVE
     """
     
     # Connect to server and RDM database

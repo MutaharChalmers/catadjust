@@ -11,25 +11,25 @@ def calcEP_ELT(elt, Nq=1, dist=None, method='oep'):
     
     Parameters
     ----------
-        elt : DataFrame
-            Generic Event Loss Table (ELT) with minimum required columns
-            EventID, MeanLoss, Rate. Columns needed for secondary uncertainty
-            calculation include StdDevLoss and ExpValue.
-        Nq : int, optional
-            Number of child events (quantiles) each parent event is split into. 
-            Defaults to 1 (expected mode).
-        dist : string, optional
-            Name of distribution used to model secondary uncertainty. Options
-            are beta and lognormal. If None, uses expected mode.
-        method : string, optional
-            Calculate OEP (default) or AEP (not yet supported).
+    elt : DataFrame
+        Generic Event Loss Table (ELT) with minimum required columns
+        EventID, MeanLoss, Rate. Columns needed for secondary uncertainty
+        calculation include StdDevLoss and ExpValue.
+    Nq : int, optional
+        Number of child events (quantiles) each parent event is split into.
+        Defaults to 1 (expected mode).
+    dist : string, optional
+        Name of distribution used to model secondary uncertainty. Options
+        are beta and lognormal. If None, uses expected mode.
+    method : string, optional
+        Calculate OEP (default) or AEP (not yet supported).
 
     Returns
     -------
-        EP : DataFrame
-            DataFrame of OEP or AEP losses and RPs, indexed by EventID.
-        AAL : float
-            Annual Average Loss.
+    EP : DataFrame
+        DataFrame of OEP or AEP losses and RPs, indexed by EventID.
+    AAL : float
+        Annual Average Loss.
     """
 
     # Set EventID as index
@@ -118,28 +118,28 @@ def calcEP_YELT(yelt, year_range=(1, None), method='oep',
     
     Parameters
     ----------
-        yelt : DataFrame
-            Year-Event Loss Table (YELT) including columns Year, Loss, [RP]. 
-            Column RP is optional - only used if argument manual_RP is True.
-        year_range : (int, int), optional
-            Start and end year (inclusive) for filtering YELT. Defaults to
-            (1, None) assuming years are 1-indexed and the largest year in the
-            YELT is the total nominal number of years.
-        method : string, optional
-            Calculate OEP (default) or AEP.
-        pp : string
-            Plotting position estimation method. Must be 'weibull' or 'median'.
-        manual_RP : boolean, optional
-            Non-null values in column `RP` override calculated RPs.
+    yelt : DataFrame
+        Year-Event Loss Table (YELT) including columns Year, Loss, [RP].
+        Column RP is optional - only used if argument manual_RP is True.
+    year_range : (int, int), optional
+        Start and end year (inclusive) for filtering YELT. Defaults to
+        (1, None) assuming years are 1-indexed and the largest year in the
+        YELT is the total nominal number of years.
+    method : string, optional
+        Calculate OEP (default) or AEP.
+    pp : string
+        Plotting position estimation method. Must be 'weibull' or 'median'.
+    manual_RP : boolean, optional
+        Non-null values in column `RP` override calculated RPs.
 
     Returns
     -------
-        EP : DataFrame
-            Table of OEP or AEP losses and RPs, including columns EP_Weibull,
-            EP_median, Loss, RP_Weibull, RP_median, RP, EEF, RP 95% ci lower,
-            RP 95% ci upper.
-        AAL : float
-            Annual Average Loss.
+    EP : DataFrame
+        Table of OEP or AEP losses and RPs, including columns EP_Weibull,
+        EP_median, Loss, RP_Weibull, RP_median, RP, EEF, RP 95% ci lower,
+        RP 95% ci upper.
+    AAL : float
+        Annual Average Loss.
     """
     
     # Unpack year_range tuple and make assumption on largest year if necessary
@@ -207,18 +207,18 @@ def rp_ci(i, n, ci_width=0.95, eef=False):
         
     Parameters
     ----------
-        i : int or ndarray
-            Rank(s) of largest annual losses in ascending order, i.e. rank 1
-            is the smallest, rank 2 is the second smallest, etc.
-        n : int
-            Number of years.
-        eef : boolean, optional
-            Return confidence interval in EEF terms or not.
+    i : int or ndarray
+        Rank(s) of largest annual losses in ascending order, i.e. rank 1
+        is the smallest, rank 2 is the second smallest, etc.
+    n : int
+        Number of years.
+    eef : boolean, optional
+        Return confidence interval in EEF terms or not.
 
     Returns
     -------
-        df : DataFrame
-            Table with lower and upper confidence intervals on RP and EEF.
+    df : DataFrame
+        Table with lower and upper confidence intervals on RP and EEF.
     """
 
     # Calculate lower and upper probability thresholds for confidence interval
