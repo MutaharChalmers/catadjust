@@ -87,10 +87,10 @@ def adam(fun, theta0, args=(), alpha=1e-3, beta1=0.9, beta2=0.999, nepochs=100,
         # Bound values
         x = np.clip(x, amin, amax)
 
-    f, grad, deltas, _ = fun(x, *(args+(None, ks[i],)))
+    f, grad, deltas, eefs_pred = fun(x, *(args+(None, ks[i],)))
     print('Iteration limit reached before cost function within tolerance')
     return dict(theta=x, fun=f, jac=grad, nit=i, deltas=deltas, annealing=ks,
-                fs=fs[fs>0])
+                fs=fs[fs>0], eefs_pred=eefs_pred)
 
 def adam_mb(fun, theta0, args=(), alpha=1e-3, beta1=0.9, beta2=0.999,
             nepochs=100, batch_size=0, rng=None, nrecs=1, ftol=1e-3,
@@ -194,7 +194,7 @@ def adam_mb(fun, theta0, args=(), alpha=1e-3, beta1=0.9, beta2=0.999,
                             annealing=ks, fs=fs[fs>0])
 
     # Reevaluate cost function and gradient for all records
-    f, grad, deltas, _ = fun(x, *(args+(nrecs_rng, ks[i])))
+    f, grad, deltas, eefs_pred = fun(x, *(args+(nrecs_rng, ks[i])))
     print('Iteration limit reached before cost function within tolerance')
     return dict(theta=x, fun=f, jac=grad, nit=i, deltas=deltas, annealing=ks,
-                fs=fs[fs>0])
+                fs=fs[fs>0], eefs_pred=eefs_pred)

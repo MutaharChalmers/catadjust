@@ -3,6 +3,8 @@
 
 import numpy as np
 import pandas as pd
+import scipy.special as ss
+from tqdm.auto import tqdm
 from .optimisers import adam, adam_mb
 
 
@@ -35,9 +37,9 @@ class RateAdjustment:
         self.elt = elt.sort_values([loccol, refcol], ascending=[True, False])
 
         # Mapping from locationIDs to internal locids
-        locations = self.elt[loccol].unique()
-        locids = np.arange(locations.size, dtype=np.int64)
-        self.locmap = dict(zip(locations, locids))
+        self.locations = self.elt[loccol].unique()
+        locids = np.arange(self.locations.size, dtype=np.int64)
+        self.locmap = dict(zip(self.locations, locids))
         self._locmap = pd.Series(self.locmap).sort_values()
         self.elt['_locid'] = self.elt[loccol].map(self.locmap)
         self.elt['eef'] = self.elt.groupby('_locid', sort=False
@@ -47,6 +49,7 @@ class RateAdjustment:
         self.eventcol = eventcol
         self.ratecol = ratecol
         self.refcol = refcol
+        self.unc = False
         m = self.elt.shape[0]
         self.rates_orig = self.elt.groupby(self.eventcol)[self.ratecol].mean()
 
@@ -64,7 +67,7 @@ class RateAdjustment:
 
     def adjust(self, target, theta0=None, nepochs=100, ftol=1e-3, alpha=1e-3,
                beta1=0.9, beta2=0.999, relative=True, adj_bnds=(1e-18, 1e3),
-               wts=None, scale=False, log=False, batch_size=0, seed=42):
+               wts=None, batch_size=0, seed=42):
         """Adjust rates to match location-level loss or hazard EEF curves.
 
         Parameters
@@ -95,10 +98,6 @@ class RateAdjustment:
         wts : DataFrame, optional
             Weights to apply to each location-EEF. Array with the same shape
             as targ. By default, locations are equally weighted.
-        scale : bool, optional
-            Optimise by scaling rates or not.
-        log : bool, optional
-            Optimise in log-space or not.
         batch_size : int, optional
             Size of batch. <1 = batch; 1 = SGD; >1 = mini-batch.
         seed : int, optional
@@ -164,12 +163,7 @@ class RateAdjustment:
         # Initial guess for adjusted rates based on mean location rate by event
         if theta0 is None:
             rates0 = rtl_df.groupby(self.eventcol)[self.ratecol].mean()
-            if scale:
-                theta0 = (rates0/self.rates_orig).fillna(np.spacing(1))
-            else:
-                theta0 = rates0.fillna(np.spacing(1))
-            if log:
-                theta0 = np.log(theta0)
+            theta0 = rates0.fillna(np.spacing(1))
         self.theta0 = np.array(theta0)
 
         # Default weights are uniform
@@ -197,8 +191,7 @@ class RateAdjustment:
         # Create dict to pass arguments for the optimiser
         opt_args = {'alpha': alpha, 'beta1': beta1, 'beta2': beta2,
                     'nepochs': nepochs, 'ftol': ftol, 'k0': 0., 'k1': 0.,
-                    'amin': np.log(adj_bnds[0]) if log else adj_bnds[0], 
-                    'amax': np.log(adj_bnds[1]) if log else adj_bnds[1]}
+                    'amin': adj_bnds[0], 'amax': adj_bnds[1]}
 
         if batch_size > 0:
             optimise = adam_mb
@@ -206,28 +199,15 @@ class RateAdjustment:
         else:
             optimise = adam
 
-        cost_args = (eefs_targ, relative, scale, log)
+        cost_args = (eefs_targ, relative)
 
         # Do the optimisation, removing the unused annealing key-value pair
         res = optimise(self.cost, self.theta0, cost_args, **opt_args)
         event_ix = pd.Index(self.eventIDs, name=self.eventcol)
         self.theta = pd.Series(res['theta'], index=event_ix)
-
-        if scale and log:
-            res['rates'] = self.rates_orig * np.exp(res['theta'])
-            self.rates = self.rates_orig * np.exp(self.theta)
-        elif scale and not log:
-            res['rates'] = self.rates_orig * res['theta']
-            self.rates = self.rates_orig * self.theta
-        elif not scale and log:
-            res['rates'] = np.exp(res['theta'])
-            self.rates = np.exp(self.theta)
-        else:
-            res['rates'] = res['theta']
-            self.rates =  self.theta * 1
+        res['rates'] = res['theta']
+        self.rates =  self.theta * 1
         res['eventIDs'] = self.eventIDs
-        res['scale'] = scale
-        res['log'] = log
 
         # Calculate cost by location over hazard curve
         tse = np.add.reduceat(res['deltas']**2, self.loc_slicers.ravel()[::2])
@@ -243,15 +223,20 @@ class RateAdjustment:
         elt_adj['rp'] = 1/(1-np.exp(-elt_adj['eef']))
         elt_adj['eef_targ'] = eefs_targ
         elt_adj['deltas'] = res['deltas']
-        elt_adj['wts'] = self.wts      
+        elt_adj['wts'] = self.wts
+
+        if self.unc:
+            print('Generating EEFs accounting for uncertainty...')
+            elt_adj['eef_unc'] = self.curves_with_uncertainty(elt_adj)
+            elt_adj['rp_unc'] = 1/(1-np.exp(-elt_adj['eef_unc']))
+            print('Complete.')
 
         return elt_adj, res
 
-    def cost(self, theta, eefs_targ, relative, scale, log, locs_mb=None, k=1.):
+    def cost(self, theta, eefs_targ, relative, locs_mb=None, k=1.):
         """Cost function for fitting an ELT/EHT to a target EEF by adjusting
-        event rates. Cost function handles relative or absolute errors, direct
-        rate adjustment, or optimisation by scaling factors, log space or not,
-        and batch or minibatch.
+        event rates. Cost function handles relative or absolute errors, optional
+        uncertainty in the hazard or loss variable, and batch or minibatch.
 
         Parameters
         ----------
@@ -262,10 +247,6 @@ class RateAdjustment:
             pre-processed ELT/EHT.
         relative : bool
             Relative or absolute error cost function.
-        scale : bool
-            Optimise by scaling rates or not.
-        log : bool
-            Optimise in log-space or not.
         locs_mb : ndarray, optional
             Indices of the locations in this mini-batch. If None, normal
             batch cost calculated.
@@ -285,8 +266,19 @@ class RateAdjustment:
         """
 
         # Initialise variables
-        eefs_pred = np.empty_like(eefs_targ)
-        grad_cost = np.zeros_like(theta)
+        if not self.unc:
+            eefs_pred = np.empty_like(eefs_targ)
+            grad_cost = np.zeros_like(theta)
+        else:
+            eefs_node = np.empty((self.nn, eefs_targ.size))
+            eefs_pred = np.empty((self.nn, eefs_targ.size))
+
+            # Optimising cost(E[.]) - track grad(cost(E[.])])
+            if self.meancurve:
+                grad_cost = np.zeros_like(theta)
+            # Optimising E[cost(.)] - track multiple 'realisations' of gradient
+            else:
+                grad_cost = np.zeros((self.nn, theta.size))
 
         # Define weights, handling minibatch case
         if locs_mb is None:
@@ -300,40 +292,224 @@ class RateAdjustment:
             wts[r] = self.wts[r]
             wts /= wts.sum()
 
-        if log:
-            theta = np.exp(theta)
-
         # Expand event rates to event-location rates
-        if scale:
-            rates = (theta*self.rates_orig.values)[self.loceventixs]
-        else:
-            rates = theta[self.loceventixs]
+        rates = theta[self.loceventixs]
 
-        # Calculate EEFs for each location by chunked cumulative sums
-        for a, b in self.loc_slicers:
-            eefs_pred[a:b] = rates[a:b].cumsum()
+        # Calculate predicted EEFs for each location without uncertainty
+        if not self.unc:
+            for a, b in self.loc_slicers:
+                eefs_pred[a:b] = rates[a:b].cumsum()
+        # Calculate EEFs for each location with uncertainty
+        else:
+            for a, b in self.loc_slicers:
+                eefs_node[:,a:b] = rates[a:b][self.sorter[:,a:b]].cumsum(axis=1)
+                eefs_pred[:,a:b] = np.take_along_axis(eefs_node[:,a:b], 
+                                                      self.indexer[:,a:b],
+                                                      axis=1)
+
+            # Calculate expected value of predicted EEFs over integration nodes
+            if self.meancurve:
+                eefs_pred = self.node_wts @ eefs_pred
 
         # Calculate deltas and cost function for current parameters
         if relative:
             deltas = (eefs_pred/eefs_targ) - 1
+            wts_eff = wts/eefs_targ
         else:
             deltas = eefs_pred - eefs_targ
-        cost = (wts * deltas**2).sum()
+            wts_eff = wts
+        cost = deltas**2 @ wts
 
         # Calculate gradient of cost function wrt to event rates
-        if scale and log:
-            dbr = deltas * (theta*self.rates_orig.values)[self.loceventixs]
-        elif scale and not log:
-            dbr = deltas * self.rates_orig.values[self.loceventixs]
-        elif not scale and log:
-            dbr = deltas * self.rates_orig.values[self.loceventixs]
+        if not self.unc or self.meancurve:
+            for a, b in self.loc_slicers:
+                dg = 2*(deltas[a:b]*wts_eff[a:b])[::-1].cumsum()[::-1]
+                grad_cost[self.loceventixs[a:b]] += dg
         else:
-            dbr = deltas
-        
-        wts_eff = wts/eefs_targ if relative else wts
-        
-        for a, b in self.loc_slicers:
-            dg = 2*(dbr[a:b]*wts_eff[a:b])[::-1].cumsum()[::-1]
-            grad_cost[self.loceventixs[a:b]] += dg
+            # Only for non-mean curve uncertainty calculations
+            for a, b in self.loc_slicers:
+                dg = 2*(deltas[:,a:b]*wts_eff[a:b])[:,::-1].cumsum(axis=1)[:,::-1]
+                grad_cost[:,self.loceventixs[a:b]] += dg
+
+            # Calculate expected values
+            cost = self.node_wts @ cost
+            grad_cost = self.node_wts @ grad_cost
+            deltas = self.node_wts @ deltas
+            eefs_pred = self.node_wts @ eefs_pred
 
         return cost, grad_cost, deltas, eefs_pred
+
+    def add_uncertainty(self, dist, sigcol, method='ghq', nn=5, meancurve=True):
+        """Adds uncertainty to the rate adjustment. Changes deterministic cost
+        function into a stochastic one, and minimises cost(E[.]) or E[cost(.)]
+        with respect to loss or hazard uncertainty distributions. Supported
+        distributions are normal and lognormal. In order to add uncertainty, a
+        column representing the (log-)standard deviations must be defined in the
+        event table. Intended to be used for EQ model adjustments targeting mean
+        seismic hazard curves produced using classical PSHA.
+
+        Parameters
+        ----------
+        dist : str
+            Distribution to used. Must be 'norm' or 'logn'.
+        sigcol : str
+            Column containing (log-)standard deviations by location-event. If
+            dist is 'norm', this column is the standard deviation of the normal
+            distribution with means defined by the reference column. If dist is
+            'logn', this column is the log-standard deviation of the lognormal
+            distribution with medians defined by the reference column.
+        method : str, optional
+            Method for handling uncertainty. Options are 'qmc' (quasi-Monte
+            Carlo) and 'ghq' (Gauss-Hermite quadrature). Defaults to 'ghq'.
+        nn : int, optional
+            Number of samples or quadrature nodes to use. Defaults to 5.
+        meancurve : boolean, optional
+            If True (default), the optimiser minimises cost(E[x]), i.e. the
+            target EEF curves are mean curves. If False, the optimiser minimises
+            E[cost(x)], i.e. stochastic optimisation allowing variance in the
+            target curve. This is relevant if targeting uncertain curves, e.g.
+            curves derived from real data.
+        """
+
+        if dist.lower()[:4] == 'norm':
+            self.dist = 'norm'
+        elif dist.lower()[:4] == 'logn':
+            self.dist = 'logn'
+        else:
+            print('Only normal and lognormal uncertainty supported')
+            return None
+
+        if method.lower()[:3] == 'qmc':
+            self.unc_method = 'qmc'
+        elif method.lower()[:4] == 'ghq':
+            self.unc_method = 'ghq'
+        else:
+            print('method must be qmc or ghq')
+            return None
+
+        self.unc = True
+        self.nn = nn
+        self.meancurve = meancurve
+
+        # If using quasi-Monte Carlo, define fixed node z-scores and weights
+        if self.unc_method == 'qmc':
+            cumprobs_raw = np.linspace(0, 1, nn+1)
+            cumprobs = 0.5*(cumprobs_raw[1:] + cumprobs_raw[:-1])
+            z = ss.ndtri(cumprobs)[:,None]
+            self.node_wts = np.ones(nn)/nn
+        # If using Gauss-Hermite, define fixed node z-scores and weights
+        else:
+            nodes_gh, weights_gh = np.polynomial.hermite.hermgauss(nn)
+            # Convert numpy "physicist's" Gauss-Hermite to "probabilist's"
+            z = nodes_gh[:,None] * np.sqrt(2)
+            self.node_wts = weights_gh / np.sqrt(np.pi)
+        
+        # Convert node z-scores to node values
+        if self.dist == 'norm':
+            self.sig = self.elt[sigcol].values
+            self.mu = self.elt[self.refcol].values
+            nodes = (self.mu[None,:] + self.sig[None,:]*z)
+        else: # self.dist == 'logn':
+            self.sig = self.elt[sigcol].values
+            self.mu = np.log(self.elt[self.refcol].values) - self.sig**2/2
+            nodes = np.exp(self.mu[None,:] + self.sig[None,:]*z)
+
+        # Create sorter and indexer for fast EEF lookup
+        self.indexer = np.empty_like(nodes, dtype=np.int64)
+        self.sorter = np.empty_like(nodes, dtype=np.int64)
+        ref = self.elt[self.refcol].values
+
+        for a, b in self.loc_slicers:
+            # Fill sorter indices for nodes in descending order
+            self.sorter[:,a:b] = np.argsort(nodes[:,a:b], axis=1)[:,::-1]
+
+            for i in range(nn):
+                # searchsorted for a sequence in descending order
+                j = b-a - np.searchsorted(np.sort(nodes[i,a:b]), ref[a:b]) - 1
+                self.indexer[i,a:b] = np.clip(j, 0, (b-a-1))
+
+    def curves_with_uncertainty(self, elt, ref_range=None, n=50, ztol=3):
+        """Generate hazard or loss curves incorporating pre-defined uncertainty.
+        This treats event rates like annual probabilities when converting event
+        conditional EPs to event EPs, which is OK for rare events. To aggregate
+        over all events to get the overall probability of x1 | x2 | ... | xN,
+        summing probabilities works if events are mutually exclusive, a
+        reasonable approximation for rare events.
+
+        Parameters
+        ----------
+        elt : DataFrame
+            ELT or EHT in standard format.
+        ref_range : tuple, optional
+            Range over which to calculate exceedance curves. If None, calculate
+            this range automatically based on the reference value in ELT/EHT.
+        n : int, optional
+            Number of points to calculate exceedance curves over ref_range.
+        ztol : float, optional
+            Z-score threshold above which CEPs not calculated for efficiency.
+        ext : bool, optional
+            Output result for external consumption as a DataFrame. If False
+            (default), output as ndarray interpolated onto reference values
+            in the input ELT/EHT.
+
+        Returns
+        -------
+        curves : ndarray
+            Array of EEF curves evaluated at reference values in ELT/EHT.
+        """
+
+        if not self.unc:
+            print('Uncertainty must be applied')
+            return None
+
+        m = self.locations.size
+        ref = np.empty((m, n))
+        if ref_range is None:
+            for i in range(m):
+                a, b = self.loc_slicers[i]
+                ref_lo = elt[self.refcol].values[b-1]*0.9
+                ref_hi = elt[self.refcol].values[a]*1.1
+                ref[i] = np.linspace(ref_lo, ref_hi, n)
+        else:
+            ref[:] = np.linspace(*ref_range, n)
+
+        if self.dist == 'logn':
+            _ref = np.log(ref)
+        else:
+            _ref = ref
+
+        # Get event rates by location
+        rates = elt[self.ratecol].values
+
+        # Generate the curves efficiently by only calculating material CEPs
+        curves = np.empty(elt.shape[0])
+        for i in tqdm(range(m)):
+            a, b = self.loc_slicers[i]
+
+            # Calculate z-scores
+            z = (_ref[i][:,None] - self.mu[a:b])/self.sig[a:b]
+
+            # Only calculate the CEP for z-scores less than ztol
+            cep = np.zeros((n, b-a))
+            j, k = np.where(z < ztol)
+            cep[j,k] = 1 - ss.ndtr(z[j,k])
+
+            # Calculate EPs and convert to EEFs
+            eefs = -np.log(1 - cep@rates[a:b])
+            curves[a:b] = np.interp(elt[self.refcol].values[a:b], ref[i], eefs)
+        return curves
+
+    def hazard_maps(self, elt, ref_col, eef_col, rps, extrap=True):
+        """"""
+        eefs = -np.log(1 - 1/rps)
+
+        haz_maps = {}
+        for i, (a, b) in enumerate(self.loc_slicers):
+            eef_loc = elt[eef_col].values[a:b]
+            ref_loc = elt[ref_col].values[a:b]
+            if extrap:
+                haz_maps[i] = np.interp(eefs, eef_loc, ref_loc)
+            else:
+                haz_maps[i] = np.interp(eefs, eef_loc, ref_loc,
+                                        left=np.nan, right=np.nan)
+        return pd.DataFrame(haz_maps, index=pd.Index(rps, name='RP')).T
