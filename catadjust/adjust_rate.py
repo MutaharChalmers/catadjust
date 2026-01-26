@@ -428,7 +428,10 @@ class RateAdjustment:
                 j = b-a - np.searchsorted(np.sort(nodes[i,a:b]), ref[a:b]) - 1
                 self.indexer[i,a:b] = np.clip(j, 0, (b-a-1))
 
-    def curves_with_uncertainty(self, elt, ref_range=None, n=50, ztol=3):
+        # Add eef_unc column to input EHT/ELT
+        self.elt['eef_unc'] = self.curves_with_uncertainty(self.elt)
+
+    def curves_with_uncertainty(self, elt, ref_range=None, n=100, ztol=3):
         """Generate hazard or loss curves incorporating pre-defined uncertainty.
         This treats event rates like annual probabilities when converting event
         conditional EPs to event EPs, which is OK for rare events. To aggregate

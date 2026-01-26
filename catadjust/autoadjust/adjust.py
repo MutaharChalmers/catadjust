@@ -70,6 +70,19 @@ def adjust_elt(elt_ref, yelt_obj, year_range, RPmax, pct_obj, niter=1,
     n = max(1, int(niter)) + 1
     wts = np.linspace(0, 1, n)
 
+    if dist is None:
+        dist = ''
+
+    if 'logn' in dist.lower():
+        q2m = q2m_lognorm
+    else:
+        q2m = q2m_general
+
+    if Nq == 1:
+        cols = ['MeanLoss']
+    else:
+        cols = ['MeanLoss','StdDevLoss']
+
     # Calculate stochastic EP curve and calculate SESFs from target losses
     # Check for RMS based on stochastic ELT columns
     if 'PERSPVALUE' in elt_ref.columns:
@@ -80,10 +93,12 @@ def adjust_elt(elt_ref, yelt_obj, year_range, RPmax, pct_obj, niter=1,
                                           'EXPVALUE': 'ExpValue'})
         elt_adj['StdDevLoss'] = elt_adj['STDDEVI'] + elt_adj['STDDEVC']
         dist = 'beta'
+    else:
+        elt_adj = elt_ref.copy()
 
-        # Track original means and standard deviations for SESF calculations
-        mean_ref = elt_adj['MeanLoss']
-        stddev_ref = elt_adj['StdDevLoss']
+    # Track original means and standard deviations for SESF calculations
+    mean_ref = elt_adj['MeanLoss']
+    stddev_ref = elt_adj['StdDevLoss']
 
     # EP of unadjusted ELT used to calculate ultimate target losses
     EP_adj, _ = calcEP_ELT(elt_adj, Nq, dist, method)
@@ -95,16 +110,31 @@ def adjust_elt(elt_ref, yelt_obj, year_range, RPmax, pct_obj, niter=1,
     EP_targ = calc_target_losses(EP_obj, EP_adj, RPmax, pct_obj)
     loss_targ = EP_targ['Loss'].to_numpy(copy=True)
 
+    # Generate cumulative probabilities for equiprobable quantiles
+    cumprobs_raw = np.linspace(0, 1, Nq+1)
+    cumprobs = 0.5*(cumprobs_raw[1:] + cumprobs_raw[:-1])
+
     # Multiple adjustment passes to incrementally adjust the ELT
     for i in tqdm(range(1, n)):
-        # Interpolate losses to current RPs
+        # Interpolate losses to current RPs, inheriting current EventID index
         loss_ref_interp = np.interp(EP_adj['RP'], RPs_ref, loss_ref)
         loss_targ_interp = np.interp(EP_adj['RP'], RPs_ref, loss_targ)
 
         # Calculate intermediate target losses
         loss_targ_wt = pd.Series(wts[i]*loss_targ_interp +
                                  (1-wts[i])*loss_ref_interp, index=EP_adj.index)
-        sesfs = fit_SESFs_ELT(loss_targ_wt, elt_adj, Nq, sesf_bounds, dist)
+
+        # Fit mean and standard deviation for each event given target quantiles
+        event_musigs = {eid: q2m(qs.to_numpy(), cumprobs)
+                        for eid, qs in loss_targ_wt.groupby(loss_targ_wt.index)}
+        event_musigs = pd.DataFrame.from_dict(event_musigs, orient='index')
+
+        # Calculate SESFs
+        sesfs = (event_musigs[cols]/elt_adj.set_index('EventID')[cols]
+                 ).rename(columns={'MeanLoss': 'MeanSESFs',
+                                   'StdDevLoss': 'StdDevSESFs'}, errors='ignore'
+                                   ).replace([np.inf, -np.inf, np.nan], 1
+                                             ).clip(*sesf_bounds)
 
         # Adjust ELT
         elt_adj = elt_adj.merge(sesfs, left_on='EventID', right_index=True)
@@ -114,6 +144,9 @@ def adjust_elt(elt_ref, yelt_obj, year_range, RPmax, pct_obj, niter=1,
         
         # Calculate adjusted EP and AAL
         EP_adj, AAL_adj = calcEP_ELT(elt_adj, Nq, dist, method)
+        EP_adj = pd.concat({'OEP': EP_adj}, axis=1)
+
+        EP_targ = pd.concat({'OEP': EP_targ}, axis=1)
 
     elt_adj['SESFs_mean'] = elt_adj['MeanLoss']/mean_ref
     elt_adj['SESFs_stddev'] = elt_adj['StdDevLoss']/stddev_ref
@@ -131,8 +164,8 @@ def adjust_elt(elt_ref, yelt_obj, year_range, RPmax, pct_obj, niter=1,
     return elt_adj, EP_adj, AAL_adj, EP_targ
 
 
-def adjust_yelt(yelt_ref, yelt_obj, year_range_ref, year_range_obj, RPmax, 
-                pct_obj, method='oep', sesf_bounds=(1e-9,1e9), pp='median', 
+def adjust_yelt(yelt_ref, yelt_obj, year_range_ref, year_range_obj, RPmax,
+                pct_obj, method=None, sesf_bounds=(1e-9,1e9), pp='median',
                 manual_RP=False, eps=1e-12):
     """Adjust a reference YELT to match a target EP curve from a objective YELT.
 
@@ -160,7 +193,7 @@ def adjust_yelt(yelt_ref, yelt_obj, year_range_ref, year_range_obj, RPmax,
         historic YELT" use-case. In this case, 100% and 0% weights are given
         to the objective (historic) at RPs 1 and RPmax respectively.
     method : str, optional
-        Whether to use OEP only, or AEP (+OEP) as a target.
+        Not used - YELT -> YELT adjusted to target both AEP and OEP.
     sesf_bounds : (float, float), optional
         Minimum and maximum values to cap SESFs at.
     pp : string
@@ -186,16 +219,13 @@ def adjust_yelt(yelt_ref, yelt_obj, year_range_ref, year_range_obj, RPmax,
     OEP_targ = calc_target_losses(OEP_obj, OEP_ref, RPmax, pct_obj)
     occ_targ = OEP_targ['Loss'].to_numpy()
 
-    if method.lower() == 'aep':
-        AEP_ref, _ = calcEP_YELT(yelt_ref, year_range_ref, 'aep', pp, manual_RP)
-        AEP_obj, _ = calcEP_YELT(yelt_obj, year_range_obj, 'aep', pp, manual_RP)
-        AEP_targ = calc_target_losses(AEP_obj, AEP_ref, RPmax, pct_obj)
-        rem_targ = (AEP_targ['Loss'] - OEP_targ['Loss']).to_numpy()
+    AEP_ref, _ = calcEP_YELT(yelt_ref, year_range_ref, 'aep', pp, manual_RP)
+    AEP_obj, _ = calcEP_YELT(yelt_obj, year_range_obj, 'aep', pp, manual_RP)
+    AEP_targ = calc_target_losses(AEP_obj, AEP_ref, RPmax, pct_obj)
+    rem_targ = (AEP_targ['Loss'] - OEP_targ['Loss']).to_numpy()
         
-        # Numpy array of target occurrence and remainders
-        M_targ = np.stack([occ_targ, rem_targ])
-    else:
-        M_targ = np.atleast_2d(occ_targ)
+    # Numpy array of target occurrence and remainders
+    M_targ = np.stack([occ_targ, rem_targ])
 
     # Identify largest occurrence losses and remainders in reference YELT
     yelt_ref['rank'] = yelt_ref.groupby('Year')['Loss'].rank(method='first',
@@ -205,24 +235,25 @@ def adjust_yelt(yelt_ref, yelt_obj, year_range_ref, year_range_obj, RPmax,
     yelt_wide = yelt_ref.set_index(['Year','rank'])['Loss'].unstack('rank')
     yelt_wide = yelt_wide.reindex(OEP_ref.index, fill_value=0)
     occ = yelt_wide[1].to_numpy()
-    if method.lower() == 'aep':
-        rem = yelt_wide[yelt_wide.columns[1:]].sum(axis=1).to_numpy()
-        M = np.stack([occ, rem])
-    else:
-        M = np.atleast_2d(occ)
+
+    rem = yelt_wide[yelt_wide.columns[1:]].sum(axis=1).to_numpy()
+    M = np.stack([occ, rem])
     
     sesfs_raw = M_targ/(M+eps)
     sesfs = np.empty(shape=yelt_wide.T.shape)
     sesfs[0] = sesfs_raw[0]
     sesfs[1:] = sesfs_raw[1] if method.lower() == 'aep' else sesfs_raw[0]
     sesfs = pd.DataFrame(sesfs.T, index=yelt_wide.index,
-                         columns=yelt_wide.columns).stack().rename('sesfs')
+                         columns=yelt_wide.columns
+                         ).clip(*sesf_bounds).stack().rename('sesfs')
 
     # Adjust reference YELT and calculate EP
     yelt_adj = yelt_ref.merge(sesfs, left_on=['Year','rank'], right_index=True)
     yelt_adj['Loss'] = yelt_adj['Loss']*yelt_adj['sesfs']
-    EP_adj, AAL_adj = calcEP_YELT(yelt_adj, year_range_ref, method, pp, manual_RP)
-    EP_targ = OEP_targ if method.lower() == 'oep' else AEP_targ
+    OEP_adj, AAL_adj = calcEP_YELT(yelt_adj, year_range_ref, 'OEP', pp, manual_RP)
+    AEP_adj, AAL_adj = calcEP_YELT(yelt_adj, year_range_ref, 'AEP', pp, manual_RP)
+    EP_adj = pd.concat({'OEP': OEP_adj, 'AEP': AEP_adj}, axis=1)
+    EP_targ = pd.concat({'OEP': OEP_targ, 'AEP': AEP_targ}, axis=1)
     return yelt_adj, EP_adj, AAL_adj, EP_targ
 
 
@@ -248,8 +279,8 @@ def calc_target_losses(EP_obj, EP_ref, RPmax, pct_obj):
 
     Returns
     -------
-    targ : Series
-        Series of target losses interpolated to the reference RPs.
+    targ : DataFrame
+        DataFrame of target losses interpolated to the reference RPs.
     """
 
     # Interpolate objective losses and blending weights to reference RPs
@@ -262,7 +293,7 @@ def calc_target_losses(EP_obj, EP_ref, RPmax, pct_obj):
     return targ.reset_index(drop=True)
 
 
-def q2m(quantiles, cumprobs):
+def q2m_general(quantiles, cumprobs):
     """Estimate mean and standard deviation from quantiles
     and associated cumulative probabilities for a general distribution.
 
@@ -292,7 +323,7 @@ def q2m(quantiles, cumprobs):
     return {'MeanLoss': m1, 'StdDevLoss': stddev}
 
 
-def q2m_logn(quantiles, cumprobs):
+def q2m_lognorm(quantiles, cumprobs):
     """Estimate mean and standard deviation from quantiles and associated
     cumulative probabilities for a lognormal distribution.
     
@@ -331,71 +362,6 @@ def q2m_logn(quantiles, cumprobs):
         mu = quantiles[0]
         sigma = 0
     return {'MeanLoss': mu, 'StdDevLoss': sigma}
-
-
-def fit_SESFs_ELT(tqs, elt_stoc, N_quantiles, sesf_bounds, dist=None):
-    """Fit mean and standard deviation of stochastic eventIDs to match target
-    losses, and calculate Stochastic Event Scaling Factors (SESFs).
-    Works with N_quantiles=1, i.e. for expected mode calculation.
-
-    Parameters
-    ----------
-    tqs : DataFrame
-        Target loss quantiles with Loss and RP columns, indexed by EventID.
-    elt_stoc : DataFrame
-        Stochastic ELT.
-    N_quantiles : int
-        Number of quantiles used to represent secondary uncertainty.
-        N_quantiles = 1 denotes using the mean value only.
-    sesf_bounds : (float, float)
-        Minimum and maximum values to cap SESFs at.
-    dist : str, optional
-        Distribution for secondary uncertainty. Generic approach used for
-        bounded distributions like beta (default). If secondary uncertainty
-        is unbounded (e.g. lognormal), use the specific distribtion option
-        for better fit. Currently only lognormal supported.
-
-    Returns
-    -------
-    sesfs : DataFrame
-        Table of SESFs.
-    """
-    
-    if dist is None:
-        dist = ''
-    
-    if 'EventID' in elt_stoc.columns:
-        elt_stoc = elt_stoc.set_index('EventID')
-
-    # Generate cumulative probabilities for equiprobable quantiles
-    cumprobs_raw = np.linspace(0, 1, N_quantiles+1)
-    cumprobs = 0.5*(cumprobs_raw[1:] + cumprobs_raw[:-1])
-
-    # Fit mean and standard deviation for each event given target quantiles
-    if 'logn' in dist.lower():
-        event_musigs = {eventID: q2m_logn(quantiles.to_numpy(), cumprobs) 
-                        for eventID, quantiles in tqs.groupby(tqs.index)}
-    else:
-        event_musigs = {eventID: q2m(quantiles.to_numpy(), cumprobs) 
-                        for eventID, quantiles in tqs.groupby(tqs.index)}
-    event_musigs = pd.DataFrame.from_dict(event_musigs, orient='index'
-                                          ).rename_axis(elt_stoc.index.name)
-    
-    # Calculate SESFs
-    if N_quantiles == 1:
-        cols = ['MeanLoss']
-    else:
-        cols = ['MeanLoss','StdDevLoss']
-    sesfs = (event_musigs[cols]/elt_stoc[cols]
-             ).rename(columns={'MeanLoss': 'MeanSESFs', 
-                               'StdDevLoss': 'StdDevSESFs'}, errors='ignore')
-    
-    # Replace nans/infs by 1 and clip factors
-    return sesfs.replace([np.inf, -np.inf, np.nan], 1).clip(*sesf_bounds)
-
-
-def fit_SESFs_YELT():
-    return None
 
 
 def calc_deltas(EP_adj, EP_targ, min_loss=1):
