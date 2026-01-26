@@ -242,7 +242,7 @@ def adjust_yelt(yelt_ref, yelt_obj, year_range_ref, year_range_obj, RPmax,
     sesfs_raw = M_targ/(M+eps)
     sesfs = np.empty(shape=yelt_wide.T.shape)
     sesfs[0] = sesfs_raw[0]
-    sesfs[1:] = sesfs_raw[1] if method.lower() == 'aep' else sesfs_raw[0]
+    sesfs[1:] = sesfs_raw[1]
     sesfs = pd.DataFrame(sesfs.T, index=yelt_wide.index,
                          columns=yelt_wide.columns
                          ).clip(*sesf_bounds).stack().rename('sesfs')
