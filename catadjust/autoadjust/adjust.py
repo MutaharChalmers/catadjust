@@ -144,9 +144,9 @@ def adjust_elt(elt_ref, yelt_obj, year_range, RPmax, pct_obj, niter=1,
         
         # Calculate adjusted EP and AAL
         EP_adj, AAL_adj = calcEP_ELT(elt_adj, Nq, dist, method)
-        EP_adj = pd.concat({'OEP': EP_adj}, axis=1)
 
-        EP_targ = pd.concat({'OEP': EP_targ}, axis=1)
+    EP_adj = pd.concat({'OEP': EP_adj}, axis=1)
+    EP_targ = pd.concat({'OEP': EP_targ}, axis=1)
 
     elt_adj['SESFs_mean'] = elt_adj['MeanLoss']/mean_ref
     elt_adj['SESFs_stddev'] = elt_adj['StdDevLoss']/stddev_ref
