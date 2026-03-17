@@ -2,7 +2,11 @@
 # -*- coding: utf-8 -*-
 
 import pandas as pd
-import pyodbc
+try:
+    import pyodbc
+except ImportError:
+    print('pyodbc could not be imported. If on a Mac or Linux/Unix system, '
+          'ensure an ODBC driver manager is installed')
 
 
 def getELT_stoc(server, rdm_db, anlsid, perspcode, driver='SQL SERVER'):

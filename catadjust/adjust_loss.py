@@ -70,8 +70,9 @@ class LossAdjustment:
         return np.exp(-np.logaddexp(0, -x))
 
     def adjust(self, target, theta0=None, nepochs=100, ftol=1e-3, alpha=1e-3,
-               beta1=0.9, beta2=0.999, relative=True, adj_bnds=(0, np.inf),
-               wts=None, annealing='log', ks=(-1, 1), batch_size=0, seed=42):
+               beta1=0.9, beta2=0.999, relative=True, mirror=True,
+               adj_bnds=(0, np.inf), wts=None, annealing='log', ks=(-1, 1),
+               batch_size=0, seed=42):
         """Adjust ELT losses to match location-level loss EEF curves.
 
         Parameters
@@ -94,6 +95,8 @@ class LossAdjustment:
             Beta2 parameter in Adam gradient descent algorithm.
         relative : bool, optional
             Use relative (percentage) error in cost function.
+        mirror : bool, optional
+            Use mirror (log) descent. Defaults to True.
         adj_bnds : (float, float), optional
             Minimum and maximum adjustment bounds on loss factors.
         wts : ndarray, optional
@@ -165,9 +168,9 @@ class LossAdjustment:
 
         # Create dict to pass arguments for the optimiser
         opt_args = {'alpha': alpha, 'beta1': beta1, 'beta2': beta2,
-                    'nepochs': nepochs, 'ftol': ftol, 'amin': adj_bnds[0],
-                    'amax': adj_bnds[1], 'k0': ks[0], 'k1': ks[1],
-                    'annealing': annealing}
+                    'nepochs': nepochs, 'mirror': mirror, 'ftol': ftol,
+                    'amin': adj_bnds[0], 'amax': adj_bnds[1], 'k0': ks[0],
+                    'k1': ks[1], 'annealing': annealing}
 
         if batch_size > 0:
             # TODO NOT IMPLEMENTED YET ======================================

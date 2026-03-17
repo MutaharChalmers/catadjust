@@ -5,8 +5,9 @@ import numpy as np
 from tqdm.auto import tqdm
 
 
-def adam(fun, theta0, args=(), alpha=1e-3, beta1=0.9, beta2=0.999, nepochs=100,
-         ftol=1e-3, amin=-np.inf, amax=np.inf, k0=0, k1=0, annealing='log'):
+def adam(fun, theta0, args, alpha=1e-3, beta1=0.9, beta2=0.999, nepochs=100,
+         mirror=True, ftol=1e-3, amin=-np.inf, amax=np.inf, k0=0, k1=0,
+         annealing='log'):
     """Adaptive Moment Estimation gradient descent.
 
     Parameters
@@ -23,8 +24,10 @@ def adam(fun, theta0, args=(), alpha=1e-3, beta1=0.9, beta2=0.999, nepochs=100,
         Exponential decay rate for gradient momentum.
     beta2 : float, optional
         Exponential decay rate for gradient variance.
-    niter : int, optional
-        Maximum number of iterations.
+    nepochs : int, optional
+        Maximum number of epochs.
+    mirror : bool, optional
+        Use mirror (log) descent. Defaults to True.
     ftol : float, optional
         Convergence criterion for cost function. Stop once the absolute
         value of the cost function is less than this.
@@ -82,7 +85,10 @@ def adam(fun, theta0, args=(), alpha=1e-3, beta1=0.9, beta2=0.999, nepochs=100,
         vhat = v/(1 - beta2**(i+1))
 
         # Update step
-        x -= alpha * mhat/(np.sqrt(vhat) + 1e-8)
+        if mirror:
+            x *= np.exp(-alpha * mhat/(np.sqrt(vhat) + 1e-8))
+        else:
+            x -= alpha * mhat/(np.sqrt(vhat) + 1e-8)
 
         # Bound values
         x = np.clip(x, amin, amax)
@@ -92,8 +98,8 @@ def adam(fun, theta0, args=(), alpha=1e-3, beta1=0.9, beta2=0.999, nepochs=100,
     return dict(theta=x, fun=f, jac=grad, nit=i, deltas=deltas, annealing=ks,
                 fs=fs[fs>0], eefs_pred=eefs_pred)
 
-def adam_mb(fun, theta0, args=(), alpha=1e-3, beta1=0.9, beta2=0.999,
-            nepochs=100, batch_size=0, rng=None, nrecs=1, ftol=1e-3,
+def adam_mb(fun, theta0, args, alpha=1e-3, beta1=0.9, beta2=0.999, nepochs=100,
+            mirror=True, batch_size=0, rng=None, nrecs=1, ftol=1e-3,
             amin=-np.inf, amax=np.inf, k0=0, k1=0, annealing='log'):
     """Adaptive Moment Estimation gradient descent for mini-batch/SGD.
 
@@ -113,6 +119,8 @@ def adam_mb(fun, theta0, args=(), alpha=1e-3, beta1=0.9, beta2=0.999,
         Exponential decay rate for gradient variance.
     nepochs : int, optional
         Maximum number of epochs.
+    mirror : bool, optional
+        Use mirror (log) descent. Defaults to True.
     batch_size : int, optional
         Batch size.
     rng : Generator, optional
@@ -177,7 +185,10 @@ def adam_mb(fun, theta0, args=(), alpha=1e-3, beta1=0.9, beta2=0.999,
             vhat = v/(1 - beta2**(i+1))
 
             # Update step
-            x -= alpha * mhat/(np.sqrt(vhat) + 1e-8)
+            if mirror:
+                x *= np.exp(-alpha * mhat/(np.sqrt(vhat) + 1e-8))
+            else:
+                x -= alpha * mhat/(np.sqrt(vhat) + 1e-8)
 
             # Bound values
             x = np.clip(x, amin, amax)
