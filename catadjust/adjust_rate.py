@@ -13,7 +13,8 @@ class RateAdjustment:
     event hazard table (EHT) to match arbitrary target location-level loss or
     hazard EEF curves by scaling event rates.
     """
-    def __init__(self, elt_raw, loccol, eventcol, ratecol, refcol):
+    def __init__(self, elt_raw, loccol, eventcol, ratecol, refcol,
+                 locratewtcol=None):
         """Load raw location-level ELT/EHT and pre-process.
 
         Parameters
@@ -28,11 +29,22 @@ class RateAdjustment:
             Name of column containing event rates.
         refcol : str
             Name of column containing event-location loss or hazard intensity.
+        locratewtcol : str, optional
+            Name of column containing location-rate weights, used for applying
+            location-specific rate factors. These are used for example to adjust
+            rates of earthquake events where the event "footprint" is all the
+            locations where the epicentry *could* be, and the hazard intensity
+            is a single eventwide parameter such as moment magnitude.
         """
+
+        if locratewtcol is None:
+            elt_raw = elt_raw.assign(locratewt=1)
+            locratewtcol = 'locratewt'
 
         # Load ELT/EHT, convert datatypes, drop duplicates and sort
         elt = elt_raw.astype({loccol: str, eventcol: np.int64,
-                              ratecol: np.float64, refcol: np.float64}
+                              ratecol: np.float64, refcol: np.float64,
+                              locratewtcol: np.float64}
                               ).drop_duplicates([loccol, eventcol]).dropna()
         self.elt = elt.sort_values([loccol, refcol], ascending=[True, False])
 
@@ -49,9 +61,11 @@ class RateAdjustment:
         self.eventcol = eventcol
         self.ratecol = ratecol
         self.refcol = refcol
+        self.locratewtcol = locratewtcol
         self.unc = False
         m = self.elt.shape[0]
         self.rates_orig = self.elt.groupby(self.eventcol)[self.ratecol].mean()
+        self.locratewts = self.elt[locratewtcol].values
 
         # Sorted array of unique eventIDs
         self.eventIDs = np.sort(self.elt[eventcol].unique())
@@ -65,8 +79,8 @@ class RateAdjustment:
         self.loc_slicers = np.hstack([np.r_[0, locbreaks][:,None],
                                       np.r_[locbreaks, m][:,None]])
 
-    def adjust(self, target, theta0=None, nepochs=100, ftol=1e-3, alpha=1e-3,
-               beta1=0.9, beta2=0.999, relative=True, mirror=True,
+    def adjust(self, target, theta0=None, orig=True, nepochs=100, ftol=1e-3,
+               alpha=1e-3, beta1=0.9, beta2=0.999, relative=True, mirror=True,
                adj_bnds=(1e-18, 1e3), wts=None, batch_size=0, seed=42):
         """Adjust rates to match location-level loss or hazard EEF curves.
 
@@ -78,6 +92,9 @@ class RateAdjustment:
             index must be exactly the same ones as in the ELT/EHT.
         theta0 : Series or ndarray, optional
             Initial guess to use for rate adjustment.
+        orig : bool, optional
+            Use original rates as initial values for adjustment optimisation.
+            Defaults to True.
         nepochs : int, optional
             Number of training epochs.
         ftol : float, optional
@@ -115,8 +132,7 @@ class RateAdjustment:
 
         # Input validation
         if not isinstance(target, pd.DataFrame):
-            print('target must be DataFrame')
-            return None, None
+            raise TypeError('target must be DataFrame')
     
         # Check that each location in the ELT/EHT corresponds to a row in target
         missing_targ_locs = set(self.locmap).symmetric_difference(target.index)
@@ -124,10 +140,9 @@ class RateAdjustment:
             locs_elt_not_target = list(set(self.locmap).difference(target.index))
             locs_target_not_elt = list(target.index.difference(self.locmap))
             if len(locs_elt_not_target) > 0:
-                print(f'ELT/EHT locations missing in target: {locs_elt_not_target}')
+                raise ValueError(f'ELT/EHT locations missing in target: {locs_elt_not_target}')
             if len(locs_target_not_elt) > 0:
-                print(f'Target locations missing in ELT/EHT: {locs_target_not_elt}')
-            return None, None
+                raise ValueError(f'Target locations missing in ELT/EHT: {locs_target_not_elt}')
         
         # Extract numpy arrays from input targ DataFrame
         eefs = target.columns.to_numpy()
@@ -135,37 +150,31 @@ class RateAdjustment:
         
         # Check that targ is increasing along axis 1
         if (targ[:,:-1] > targ[:,1:]).any() or (eefs[:-1] < eefs[1:]).any():
-            print('targ values/columns must increase/decrease along axis 1')
-            return None, None
+            raise ValueError('targ values/columns must increase/decrease along axis 1')
 
         # Interpolate input target EEFs to all rows of ELT/EHT
         eefs_targ = np.concatenate([np.interp(x[self.refcol], targ[i], eefs)
                                     for i, x in self.elt.groupby('_locid')])
 
-        # Estimate target rates by location
-        eefs_targ_by_loc = np.split(eefs_targ, self.loc_slicers[1:,0])
-        rates_targ_by_loc = []
-        for eefs_targ_loc in eefs_targ_by_loc:
-            # Take differences between successive EEFs to estimate rates
-            rates_targ_loc = np.diff(eefs_targ_loc)
-            # np.diff on length n array returns n-1 values so add first rate
-            if rates_targ_loc.size > 0:
-                if rates_targ_loc[0] > 0:
-                    r0 = eefs_targ_loc[0]
-                else:
-                    r0 = 0.
-            else:
-                r0 = eefs_targ_loc
-            rates_targ_by_loc.append(np.r_[r0, rates_targ_loc])
-        rates_targ_by_loc = np.concatenate(rates_targ_by_loc)
-        rtl_df = pd.DataFrame({self.eventcol: self.elt[self.eventcol].values,
-                               self.ratecol: rates_targ_by_loc}
-                              ).replace({self.ratecol: {0: np.nan}})
-
         # Initial guess for adjusted rates based on mean location rate by event
-        if theta0 is None:
-            rates0 = rtl_df.groupby(self.eventcol)[self.ratecol].mean()
+        if theta0 is None and orig:
+            theta0 = self.rates_orig
+        elif theta0 is None:
+            eefs_targ_by_loc = np.split(eefs_targ, self.loc_slicers[1:,0])
+            rates_targ_by_loc = []
+            for eefs_targ_loc in eefs_targ_by_loc:
+                # Take differences between successive EEFs to estimate rates
+                # diff on length-n array gives n-1 values so prepend first rate
+                rates_targ_loc = np.r_[eefs_targ_loc[0], np.diff(eefs_targ_loc)]
+                rates_targ_by_loc.append(rates_targ_loc)
+            rates_targ_by_loc = np.concatenate(rates_targ_by_loc)
+            rtl = pd.DataFrame({self.eventcol: self.elt[self.eventcol].values,
+                                self.ratecol: rates_targ_by_loc}
+                               ).replace({self.ratecol: {0: np.nan}})
+            rates0 = rtl.groupby(self.eventcol)[self.ratecol].mean()
             theta0 = rates0.fillna(np.spacing(1))
+        else:
+            pass
         self.theta0 = np.array(theta0)
 
         # Default weights are uniform
@@ -175,8 +184,7 @@ class RateAdjustment:
             if isinstance(wts, pd.DataFrame):
                 wts = wts.reindex(self._locmap.index).to_numpy()
             else:
-                print('wts must be a DataFrame')
-                return None, None
+                raise TypeError('wts must be a DataFrame')
 
         # Interpolate wts into ELT/EHT wrt hazard/loss
         wts = [np.interp(x[self.refcol], targ[i], wts[i], left=0, right=0)
@@ -206,9 +214,8 @@ class RateAdjustment:
         # Do the optimisation, removing the unused annealing key-value pair
         res = optimise(self.cost, self.theta0, cost_args, **opt_args)
         event_ix = pd.Index(self.eventIDs, name=self.eventcol)
-        self.theta = pd.Series(res['theta'], index=event_ix)
+        self.rates = pd.Series(res['theta'], index=event_ix)
         res['rates'] = res['theta']
-        self.rates =  self.theta * 1
         res['eventIDs'] = self.eventIDs
 
         # Calculate cost by location over hazard curve
@@ -295,7 +302,7 @@ class RateAdjustment:
             wts /= wts.sum()
 
         # Expand event rates to event-location rates
-        rates = theta[self.loceventixs]
+        rates = theta[self.loceventixs] * self.locratewts
 
         # Calculate predicted EEFs for each location without uncertainty
         if not self.unc:
@@ -326,12 +333,12 @@ class RateAdjustment:
         if not self.unc or self.meancurve:
             for a, b in self.loc_slicers:
                 dg = 2*(deltas[a:b]*wts_eff[a:b])[::-1].cumsum()[::-1]
-                grad_cost[self.loceventixs[a:b]] += dg
+                grad_cost[self.loceventixs[a:b]] += dg * self.locratewts[a:b]
         else:
             # Only for non-mean curve uncertainty calculations
             for a, b in self.loc_slicers:
                 dg = 2*(deltas[:,a:b]*wts_eff[a:b])[:,::-1].cumsum(axis=1)[:,::-1]
-                grad_cost[:,self.loceventixs[a:b]] += dg
+                grad_cost[:,self.loceventixs[a:b]] += dg * self.locratewts[a:b]
 
             # Calculate expected values
             cost = self.node_wts @ cost
@@ -378,16 +385,14 @@ class RateAdjustment:
         elif dist.lower()[:4] == 'logn':
             self.dist = 'logn'
         else:
-            print('Only normal and lognormal uncertainty supported')
-            return None
+            raise ValueError('Only normal and lognormal uncertainty supported')
 
         if method.lower()[:3] == 'qmc':
             self.unc_method = 'qmc'
         elif method.lower()[:4] == 'ghq':
             self.unc_method = 'ghq'
         else:
-            print('method must be qmc or ghq')
-            return None
+            raise ValueError('method must be qmc or ghq')
 
         self.unc = True
         self.nn = nn
@@ -452,10 +457,6 @@ class RateAdjustment:
             Number of points to calculate exceedance curves over ref_range.
         ztol : float, optional
             Z-score threshold above which CEPs not calculated for efficiency.
-        ext : bool, optional
-            Output result for external consumption as a DataFrame. If False
-            (default), output as ndarray interpolated onto reference values
-            in the input ELT/EHT.
 
         Returns
         -------
@@ -464,8 +465,7 @@ class RateAdjustment:
         """
 
         if not self.unc:
-            print('Uncertainty must be applied')
-            return None
+            raise ValueError('Uncertainty must be applied')
 
         m = self.locations.size
         ref = np.empty((m, n))
@@ -505,7 +505,28 @@ class RateAdjustment:
         return curves
 
     def hazard_maps(self, elt, ref_col, eef_col, rps, extrap=True):
-        """"""
+        """Make DataFrame of hazard maps interpolated to selected RPs.
+
+        Parameters
+        ----------
+        elt : DataFrame
+            ELT or EHT in standard format.
+        ref_col : str
+            Name of column containing event-location loss or hazard intensity.
+        eef_col : str
+            Name of column containing EEF values.
+        RPs : ndarray
+            Array of return periods at which to calculate the hazard.
+        extrap : bool, optional
+            If True, extrapolates out-of-bounds values crudely per np.interp,
+            otherwise returns nan for them.
+
+        Returns
+        -------
+        haz_maps : DataFrame
+            Hazard maps.
+        """
+
         eefs = -np.log(1 - 1/rps)
 
         haz_maps = {}
