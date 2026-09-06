@@ -169,12 +169,14 @@ class RateAdjustment:
                 rates_targ_by_loc.append(rates_targ_loc)
             rates_targ_by_loc = np.concatenate(rates_targ_by_loc)
             rtl = pd.DataFrame({self.eventcol: self.elt[self.eventcol].values,
-                                self.ratecol: rates_targ_by_loc}
-                               ).replace({self.ratecol: {0: np.nan}})
-            rates0 = rtl.groupby(self.eventcol)[self.ratecol].mean()
-            theta0 = rates0.fillna(np.spacing(1))
-        else:
-            pass
+                                'num': rates_targ_by_loc,
+                                'den': self.locratewts})
+            numden = rtl.groupby(self.eventcol)[['num','den']].sum()
+            theta0 = numden['num']/numden['den']
+        elif isinstance(theta0, pd.Series):
+            theta0 = theta0.reindex(self.eventIDs)
+            if theta0.isna().any():
+                raise ValueError('theta0 missing events in the ELT/EHT')
         self.theta0 = np.array(theta0)
 
         # Default weights are uniform
