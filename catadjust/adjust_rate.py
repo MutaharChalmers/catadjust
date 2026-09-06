@@ -226,7 +226,7 @@ class RateAdjustment:
 
         # Create adjusted ELT/EHT DataFrame
         elt_adj = self.elt.copy()
-        elt_adj[self.ratecol] = self.rates.values[self.loceventixs]
+        elt_adj[self.ratecol] = self.rates.values[self.loceventixs] * self.locratewts
         elt_adj['eef'] = elt_adj.groupby('_locid', sort=False
                                          )[self.ratecol].transform('cumsum')
         elt_adj['rp'] = 1/(1-np.exp(-elt_adj['eef']))
