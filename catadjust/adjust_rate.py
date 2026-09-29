@@ -186,7 +186,7 @@ class RateAdjustment:
 
         # Default weights are uniform
         if wts is None:
-            wts = np.ones(self.m)
+            wts = np.ones_like(targ)
         else:
             if isinstance(wts, pd.DataFrame):
                 wts = wts.reindex(self._locmap.index).to_numpy()
@@ -321,8 +321,8 @@ class RateAdjustment:
             dg_all = np.empty(self.m)
             for a, b in self.loc_slicers:
                 dg_all[a:b] = 2*(deltas[a:b]*dwts[a:b])[::-1].cumsum()[::-1]
-            grad_cost = np.bincount(self.loceventixs, weights=dg_all,
-                                    minlength=self.nevents) * self.locratewts
+            grad_cost = np.bincount(self.loceventixs, minlength=self.nevents,
+                                    weights=dg_all*self.locratewts)
         else:
             # Only for non-mean curve uncertainty calculations
             for a, b in self.loc_slicers:
