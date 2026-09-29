@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import scipy.special as ss
 from tqdm.auto import tqdm
-from .optimisers import adam, adam_mb
+from .optimisers import adam
 
 
 class RateAdjustment:
@@ -31,10 +31,13 @@ class RateAdjustment:
             Name of column containing event-location loss or hazard intensity.
         locratewtcol : str, optional
             Name of column containing location-rate weights, used for applying
-            location-specific rate factors. These are used for example to adjust
-            rates of earthquake events where the event "footprint" is all the
-            locations where the epicentry *could* be, and the hazard intensity
-            is a single eventwide parameter such as moment magnitude.
+            location-specific rate factors to event rates. For normal use cases,
+            when locations have different hazard values, these are all 1. For
+            special use cases, such as when adjusting earthquake event rates to
+            match gridded MFDs derived from fault rupture polygons, they are not
+            all 1. In this case, the event 'footprint' is all locations
+            where the epicentre *could* be, and the hazard intensity is a single
+            event-wide parameter such as moment magnitude.
         """
 
         if locratewtcol is None:
@@ -54,17 +57,12 @@ class RateAdjustment:
         self.locmap = dict(zip(self.locations, locids))
         self._locmap = pd.Series(self.locmap).sort_values()
         self.elt['_locid'] = self.elt[loccol].map(self.locmap)
+        self.elt['_rate'] = self.elt[ratecol] * self.elt[locratewtcol]
         self.elt['eef'] = self.elt.groupby('_locid', sort=False
-                                           )[ratecol].transform('cumsum')
+                                           )['_rate'].transform('cumsum')
 
-        self.loccol = loccol
-        self.eventcol = eventcol
-        self.ratecol = ratecol
-        self.refcol = refcol
-        self.locratewtcol = locratewtcol
         self.unc = False
-        m = self.elt.shape[0]
-        self.rates_orig = self.elt.groupby(self.eventcol)[self.ratecol].mean()
+        self.rates_orig = self.elt.groupby(eventcol)[ratecol].mean()
         self.locratewts = self.elt[locratewtcol].values
 
         # Sorted array of unique eventIDs
@@ -76,12 +74,19 @@ class RateAdjustment:
 
         # Indices in ELT/EHT where location changes
         locbreaks = np.nonzero(np.diff(self.elt['_locid']))[0] + 1
-        self.loc_slicers = np.hstack([np.r_[0, locbreaks][:,None],
-                                      np.r_[locbreaks, m][:,None]])
+        self.loc_slicers = np.column_stack([np.r_[0, locbreaks],
+                                            np.r_[locbreaks, len(self.elt)]])
+
+        # Save column names as attributes
+        self.loccol = loccol
+        self.eventcol = eventcol
+        self.ratecol = ratecol
+        self.refcol = refcol
+        self.locratewtcol = locratewtcol
 
     def adjust(self, target, theta0=None, orig=True, nepochs=100, ftol=1e-3,
                alpha=1e-3, beta1=0.9, beta2=0.999, relative=True, mirror=True,
-               adj_bnds=(1e-18, 1e3), wts=None, batch_size=0, seed=42):
+               adj_bnds=(1e-6, 1e6), wts=None):
         """Adjust rates to match location-level loss or hazard EEF curves.
 
         Parameters
@@ -96,10 +101,10 @@ class RateAdjustment:
             Use original rates as initial values for adjustment optimisation.
             Defaults to True.
         nepochs : int, optional
-            Number of training epochs.
+            Number of training epochs. Defaults to 100.
         ftol : float, optional
-            Convergence criterion for cost function. Stop once the
-            absolute value of the cost function is less than this.
+            Convergence criterion for cost function. Stop once the absolute
+            value of the cost function is less than this.
         alpha : float, optional
             Learning rate in Adam gradient descent algorithm.
         beta1 : float, optional
@@ -117,10 +122,6 @@ class RateAdjustment:
         wts : DataFrame, optional
             Weights to apply to each location-EEF. Array with the same shape
             as targ. By default, locations are equally weighted.
-        batch_size : int, optional
-            Size of batch. <1 = batch; 1 = SGD; >1 = mini-batch.
-        seed : int, optional
-            Seed for random number generator used for SGD and mini-batch GD.
 
         Returns
         -------
@@ -137,12 +138,14 @@ class RateAdjustment:
         # Check that each location in the ELT/EHT corresponds to a row in target
         missing_targ_locs = set(self.locmap).symmetric_difference(target.index)
         if len(missing_targ_locs) > 0:
-            locs_elt_not_target = list(set(self.locmap).difference(target.index))
-            locs_target_not_elt = list(target.index.difference(self.locmap))
-            if len(locs_elt_not_target) > 0:
-                raise ValueError(f'ELT/EHT locations missing in target: {locs_elt_not_target}')
-            if len(locs_target_not_elt) > 0:
-                raise ValueError(f'Target locations missing in ELT/EHT: {locs_target_not_elt}')
+            locs_elt_not_targ = list(set(self.locmap).difference(target.index))
+            locs_targ_not_elt = list(target.index.difference(self.locmap))
+            if len(locs_elt_not_targ) > 0:
+                raise ValueError('ELT/EHT locations missing in target: '
+                                 f'{locs_elt_not_targ}')
+            if len(locs_targ_not_elt) > 0:
+                raise ValueError('Target locations missing in ELT/EHT: '
+                                 f'{locs_targ_not_elt}')
         
         # Extract numpy arrays from input targ DataFrame
         eefs = target.columns.to_numpy()
@@ -150,7 +153,8 @@ class RateAdjustment:
         
         # Check that targ is increasing along axis 1
         if (targ[:,:-1] > targ[:,1:]).any() or (eefs[:-1] < eefs[1:]).any():
-            raise ValueError('targ values/columns must increase/decrease along axis 1')
+            raise ValueError('targ values/columns must increase/decrease '
+                             'along axis 1')
 
         # Interpolate input target EEFs to all rows of ELT/EHT
         eefs_targ = np.concatenate([np.interp(x[self.refcol], targ[i], eefs)
@@ -194,41 +198,39 @@ class RateAdjustment:
         wts = np.concatenate(wts)
         self.wts = np.array(wts, dtype=np.float64)/np.sum(wts)
 
-        # Create RNG object for SGD and mini-batch SGD
-        if batch_size > 0:
-            nlocs = self.loc_slicers.shape[0]
-            rng = np.random.default_rng(seed)
-            stoc_args = {'nrecs': nlocs, 'rng': rng, 'batch_size': batch_size}
-
         # Create dict to pass arguments for the optimiser
         opt_args = {'alpha': alpha, 'beta1': beta1, 'beta2': beta2,
                     'nepochs': nepochs, 'mirror': mirror, 'ftol': ftol,
                     'k0': 0, 'k1': 0, 'amin': adj_bnds[0], 'amax': adj_bnds[1]}
-
-        if batch_size > 0:
-            optimise = adam_mb
-            opt_args = {**opt_args, **stoc_args}
-        else:
-            optimise = adam
-
         cost_args = (eefs_targ, relative)
 
-        # Do the optimisation, removing the unused annealing key-value pair
-        res = optimise(self.cost, self.theta0, cost_args, **opt_args)
-        event_ix = pd.Index(self.eventIDs, name=self.eventcol)
-        self.rates = pd.Series(res['theta'], index=event_ix)
-        res['rates'] = res['theta']
-        res['eventIDs'] = self.eventIDs
+        # Do the optimisation and postprocess output
+        res = adam(self.cost, self.theta0, cost_args, **opt_args)
+        eventIDs = pd.Index(self.eventIDs, name=self.eventcol)
+        rates = pd.Series(res['theta'], index=eventIDs)
+        res['eventIDs'] = eventIDs
+        res['rates'] = rates
 
-        # Calculate cost by location over hazard curve
-        tse = np.add.reduceat(res['deltas']**2, self.loc_slicers.ravel()[::2])
-        n = np.diff(self.loc_slicers, axis=1).ravel()
-        res['loc_mse'] = tse/n   
+        # Calculate weighted cost over hazard curves by location
+        sse = np.add.reduceat(wts*res['deltas']**2, self.loc_slicers[:,0])
+        nnz = np.add.reduceat(wts>0, self.loc_slicers[:,0])
+        res['loc_mse'] = pd.Series(sse/nnz, index=pd.Index(self.locations))
+
+        if relative:
+            deltas_orig = eefs_targ/self.elt['eef'] - 1
+        else:
+            deltas_orig = eefs_targ - self.elt['eef']
+        sse_orig = np.add.reduceat(wts*deltas_orig**2, self.loc_slicers[:,0])
+        nnz = np.add.reduceat(wts>0, self.loc_slicers[:,0])
+        res['loc_mse_orig'] = pd.Series(sse_orig/nnz,
+                                        index=pd.Index(self.locations))
+
+        # Remove the unused annealing key-value
         res.pop('annealing')   
 
         # Create adjusted ELT/EHT DataFrame
         elt_adj = self.elt.copy()
-        elt_adj[self.ratecol] = self.rates.values[self.loceventixs] * self.locratewts
+        elt_adj[self.ratecol] = rates.values[self.loceventixs] * self.locratewts
         elt_adj['eef'] = elt_adj.groupby('_locid', sort=False
                                          )[self.ratecol].transform('cumsum')
         elt_adj['rp'] = 1/(1-np.exp(-elt_adj['eef']))
@@ -244,10 +246,10 @@ class RateAdjustment:
 
         return elt_adj, res
 
-    def cost(self, theta, eefs_targ, relative, locs_mb=None, k=1.):
+    def cost(self, theta, eefs_targ, relative, k=1.):
         """Cost function for fitting an ELT/EHT to a target EEF by adjusting
-        event rates. Cost function handles relative or absolute errors, optional
-        uncertainty in the hazard or loss variable, and batch or minibatch.
+        event rates. Cost function handles relative or absolute errors, with
+        optional uncertainty in the hazard or loss variable.
 
         Parameters
         ----------
@@ -258,9 +260,6 @@ class RateAdjustment:
             pre-processed ELT/EHT.
         relative : bool
             Relative or absolute error cost function.
-        locs_mb : ndarray, optional
-            Indices of the locations in this mini-batch. If None, normal
-            batch cost calculated.
         k : float, optional
             Annealing parameter - not used, kept for API consistency.
 
@@ -291,18 +290,6 @@ class RateAdjustment:
             else:
                 grad_cost = np.zeros((self.nn, theta.size))
 
-        # Define weights, handling minibatch case
-        if locs_mb is None:
-            wts = self.wts
-        else:
-            # Calculate mini-batch weights
-            wts = np.zeros(self.wts.size, np.float64)
-            r = np.full(self.wts.size, False, dtype=np.bool_)
-            for a, b in self.loc_slicers[locs_mb]:
-                r[a:b] = True
-            wts[r] = self.wts[r]
-            wts /= wts.sum()
-
         # Expand event rates to event-location rates
         rates = theta[self.loceventixs] * self.locratewts
 
@@ -325,21 +312,21 @@ class RateAdjustment:
         # Calculate deltas and cost function for current parameters
         if relative:
             deltas = (eefs_pred/eefs_targ) - 1
-            wts_eff = wts/eefs_targ
+            dwts = self.wts/eefs_targ
         else:
             deltas = eefs_pred - eefs_targ
-            wts_eff = wts
-        cost = deltas**2 @ wts
+            dwts = self.wts
+        cost = deltas**2 @ self.wts
 
         # Calculate gradient of cost function wrt to event rates
         if not self.unc or self.meancurve:
             for a, b in self.loc_slicers:
-                dg = 2*(deltas[a:b]*wts_eff[a:b])[::-1].cumsum()[::-1]
+                dg = 2*(deltas[a:b]*dwts[a:b])[::-1].cumsum()[::-1]
                 grad_cost[self.loceventixs[a:b]] += dg * self.locratewts[a:b]
         else:
             # Only for non-mean curve uncertainty calculations
             for a, b in self.loc_slicers:
-                dg = 2*(deltas[:,a:b]*wts_eff[a:b])[:,::-1].cumsum(axis=1)[:,::-1]
+                dg = 2*(deltas[:,a:b]*dwts[a:b])[:,::-1].cumsum(axis=1)[:,::-1]
                 grad_cost[:,self.loceventixs[a:b]] += dg * self.locratewts[a:b]
 
             # Calculate expected values

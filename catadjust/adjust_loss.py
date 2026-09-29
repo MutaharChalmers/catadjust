@@ -3,7 +3,7 @@
 
 import numpy as np
 import pandas as pd
-from .optimisers import adam, adam_mb
+from .optimisers import adam
 
 
 class LossAdjustment:
@@ -42,12 +42,6 @@ class LossAdjustment:
         self.elt['eef'] = self.elt.groupby('_locid', sort=False
                                            )[ratecol].transform('cumsum')
 
-        self.loccol = loccol
-        self.eventcol = eventcol
-        self.ratecol = ratecol
-        self.refcol = refcol
-        m = self.elt.shape[0]
-
         # Arrays of unique eventIDs and rates in eventID order
         self.eventIDs, ix = np.unique(self.elt[eventcol], return_index=True)
         self.rates = self.elt[ratecol].values[ix]
@@ -58,12 +52,18 @@ class LossAdjustment:
 
         # Indices in ELT where location changes
         locbreaks = np.nonzero(np.diff(self.elt['_locid']))[0] + 1
-        self.loc_slicers = np.hstack([np.r_[0, locbreaks][:,None],
-                                      np.r_[locbreaks, m][:,None]])
+        self.loc_slicers = np.column_stack([np.r_[0, locbreaks],
+                                            np.r_[locbreaks, len(self.elt)]])
 
         # Maximum EEFs in ELT by location - use to make mask for cost function
         self.max_eefs = self.elt.groupby('_locid', sort=False
                                          )['eef'].max().values[:,None]
+
+        # Save column names as attributes
+        self.loccol = loccol
+        self.eventcol = eventcol
+        self.ratecol = ratecol
+        self.refcol = refcol
 
     def expit(self, x):
         """Logistic sigmoid function."""
@@ -71,8 +71,7 @@ class LossAdjustment:
 
     def adjust(self, target, theta0=None, nepochs=100, ftol=1e-3, alpha=1e-3,
                beta1=0.9, beta2=0.999, relative=True, mirror=True,
-               adj_bnds=(0, np.inf), wts=None, annealing='log', ks=(-1, 1),
-               batch_size=0, seed=42):
+               adj_bnds=(0, np.inf), wts=None, annealing='log', ks=(-1, 1)):
         """Adjust ELT losses to match location-level loss EEF curves.
 
         Parameters
@@ -106,10 +105,6 @@ class LossAdjustment:
             Annealing schedule. One of log, lin, cos.
         ks : (float, float), optional
             Log10 of initial and final annealing parameters.
-        batch_size : int, optional
-            Size of batch. <1 = batch; 1 = SGD; >1 = mini-batch.
-        seed : int, optional
-            Seed for random number generator used for SGD and mini-batch GD.
 
         Returns
         -------
@@ -127,12 +122,12 @@ class LossAdjustment:
         # Check that every location in the ELT has a corresponding row in target
         missing_targ_locs = set(self.locmap).symmetric_difference(target.index)
         if len(missing_targ_locs) > 0:
-            locs_elt_not_target = list(set(self.locmap).difference(target.index))
-            locs_target_not_elt = list(target.index.difference(self.locmap))
-            if len(locs_elt_not_target) > 0:
-                print(f'ELT locations missing in target: {locs_elt_not_target}')
-            if len(locs_target_not_elt) > 0:
-                print(f'Target locations missing in ELT: {locs_target_not_elt}')
+            locs_elt_not_targ = list(set(self.locmap).difference(target.index))
+            locs_targ_not_elt = list(target.index.difference(self.locmap))
+            if len(locs_elt_not_targ) > 0:
+                print(f'ELT locations missing in target: {locs_elt_not_targ}')
+            if len(locs_targ_not_elt) > 0:
+                print(f'Target locations missing in ELT: {locs_targ_not_elt}')
             return None, None
 
         # Extract numpy arrays from input target DataFrame, sorting
@@ -160,33 +155,17 @@ class LossAdjustment:
         else:
             self.wts = np.array(wts, dtype=np.float64)/np.sum(np.array(wts))
 
-        # Create RNG object for SGD and mini-batch SGD
-        if batch_size > 0:
-            nlocs = self.loc_slicers.shape[0]
-            rng = np.random.default_rng(seed)
-            stoc_args = {'nrecs': nlocs, 'rng': rng, 'batch_size': batch_size}
-
         # Create dict to pass arguments for the optimiser
         opt_args = {'alpha': alpha, 'beta1': beta1, 'beta2': beta2,
                     'nepochs': nepochs, 'mirror': mirror, 'ftol': ftol,
                     'amin': adj_bnds[0], 'amax': adj_bnds[1], 'k0': ks[0],
                     'k1': ks[1], 'annealing': annealing}
 
-        if batch_size > 0:
-            # TODO NOT IMPLEMENTED YET ======================================
-            #optimise = adam_mb
-            #opt_args = {**opt_args, **stoc_args}
-            print('Minibatch not yet implemented - reverting to batch')
-            optimise = adam
-            # /TODO NOT IMPLEMENTED YET =====================================
-        else:
-            optimise = adam
-
-        # Hard-code tol to 16
+        # Hard-code tol to 15
         cost_args = (targ, eefs, relative, cost_mask, 15)
 
         # Do the optimisation
-        res = optimise(self.cost, theta0, cost_args, **opt_args)
+        res = adam(self.cost, theta0, cost_args, **opt_args)
         res['eventIDs'] = self.eventIDs
 
         # Post-processing of results
@@ -203,8 +182,7 @@ class LossAdjustment:
         elt_adj['rp'] = 1/(1-np.exp(-elt_adj['eef']))
         return elt_adj, res
 
-    def cost(self, theta, loss_targ, eefs_targ, relative, cost_mask, tol=20,
-             locs_mb=None, k=1.):
+    def cost(self, theta, loss_targ, eefs_targ, relative, cost_mask, tol=20, k=1.):
         """Cost function for fitting an ELT to a target EEF by adjusting
         event losses. Cost function is based on relative (percentage) errors.
 
@@ -226,9 +204,6 @@ class LossAdjustment:
         tol : float, optional
             Tolerance used to mask out inputs to logistic function to speed up
             calculations on the distance matrix.
-        locs_mb : ndarray, optional
-            Indices of the locations in this mini-batch. If None, normal
-            batch cost calculated. Not yet implemented.
         k : float, optional
             Logistic function scale parameter (or growth rate), governing the
             smoothness of the continuous approximation to the EEF function.
