@@ -32,6 +32,7 @@ class LossAdjustment:
                               ratecol: np.float64, refcol: np.float64}
                               ).drop_duplicates([loccol, eventcol]).dropna()
         self.elt = elt.sort_values([loccol, refcol], ascending=[True, False])
+        self.m = len(self.elt)
 
         # Mapping from locationIDs to internal locids
         locations = self.elt[loccol].unique()

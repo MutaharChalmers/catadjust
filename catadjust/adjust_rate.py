@@ -50,6 +50,7 @@ class RateAdjustment:
                               locratewtcol: np.float64}
                               ).drop_duplicates([loccol, eventcol]).dropna()
         self.elt = elt.sort_values([loccol, refcol], ascending=[True, False])
+        self.m = len(self.elt)
 
         # Mapping from locationIDs to internal locids
         self.locations = self.elt[loccol].unique()
@@ -86,7 +87,7 @@ class RateAdjustment:
 
     def adjust(self, target, theta0=None, orig=True, nepochs=100, ftol=1e-3,
                alpha=1e-3, beta1=0.9, beta2=0.999, relative=True, mirror=True,
-               adj_bnds=(1e-6, 1e6), wts=None):
+               adj_bnds=(1e-99, 1e99), wts=None):
         """Adjust rates to match location-level loss or hazard EEF curves.
 
         Parameters
@@ -116,9 +117,9 @@ class RateAdjustment:
         mirror : bool, optional
             Use mirror (log) descent. Defaults to True.
         adj_bnds : (float, float), optional
-            Minimum and maximum adjustment bounds. If scale is true, these are
-            limiting rate scaling factors, otherwise these are absolute limits
-            on the values the rates can take.
+            Minimum and maximum rate bounds. Absolute limits on the values rates
+            can take. If relative bounds are needed, apply relative scalings
+            outside of this function and pass the scaled absolute values.
         wts : DataFrame, optional
             Weights to apply to each location-EEF. Array with the same shape
             as targ. By default, locations are equally weighted.
@@ -185,7 +186,7 @@ class RateAdjustment:
 
         # Default weights are uniform
         if wts is None:
-            wts = np.ones_like(targ)
+            wts = np.ones(self.m)
         else:
             if isinstance(wts, pd.DataFrame):
                 wts = wts.reindex(self._locmap.index).to_numpy()
@@ -204,8 +205,10 @@ class RateAdjustment:
                     'k0': 0, 'k1': 0, 'amin': adj_bnds[0], 'amax': adj_bnds[1]}
         cost_args = (eefs_targ, relative)
 
-        # Do the optimisation and postprocess output
+        # Do the optimisation
         res = adam(self.cost, self.theta0, cost_args, **opt_args)
+
+        # Postprocess output
         eventIDs = pd.Index(self.eventIDs, name=self.eventcol)
         rates = pd.Series(res['theta'], index=eventIDs)
         res['eventIDs'] = eventIDs
@@ -213,23 +216,22 @@ class RateAdjustment:
 
         # Calculate weighted cost over hazard curves by location
         sse = np.add.reduceat(wts*res['deltas']**2, self.loc_slicers[:,0])
-        nnz = np.add.reduceat(wts>0, self.loc_slicers[:,0])
-        res['loc_mse'] = pd.Series(sse/nnz, index=pd.Index(self.locations))
+        swt = np.add.reduceat(wts, self.loc_slicers[:,0])
+        res['loc_mse'] = pd.Series(sse/swt, index=pd.Index(self.locations))
 
         if relative:
-            deltas_orig = eefs_targ/self.elt['eef'] - 1
+            deltas_orig = eefs_targ/self.elt['eef'].values - 1
         else:
-            deltas_orig = eefs_targ - self.elt['eef']
+            deltas_orig = eefs_targ - self.elt['eef'].values
         sse_orig = np.add.reduceat(wts*deltas_orig**2, self.loc_slicers[:,0])
-        nnz = np.add.reduceat(wts>0, self.loc_slicers[:,0])
-        res['loc_mse_orig'] = pd.Series(sse_orig/nnz,
+        res['loc_mse_orig'] = pd.Series(sse_orig/swt,
                                         index=pd.Index(self.locations))
 
         # Remove the unused annealing key-value
         res.pop('annealing')   
 
         # Create adjusted ELT/EHT DataFrame
-        elt_adj = self.elt.copy()
+        elt_adj = self.elt.drop('_rate', axis=1)
         elt_adj[self.ratecol] = rates.values[self.loceventixs] * self.locratewts
         elt_adj['eef'] = elt_adj.groupby('_locid', sort=False
                                          )[self.ratecol].transform('cumsum')
@@ -277,17 +279,13 @@ class RateAdjustment:
 
         # Initialise variables
         if not self.unc:
-            eefs_pred = np.empty_like(eefs_targ)
-            grad_cost = np.zeros_like(theta)
+            eefs_pred = np.empty(self.m)
         else:
-            eefs_node = np.empty((self.nn, eefs_targ.size))
-            eefs_pred = np.empty((self.nn, eefs_targ.size))
+            eefs_node = np.empty((self.nn, self.m))
+            eefs_pred = np.empty((self.nn, self.m))
 
-            # Optimising cost(E[.]) - track grad(cost(E[.])])
-            if self.meancurve:
-                grad_cost = np.zeros_like(theta)
             # Optimising E[cost(.)] - track multiple 'realisations' of gradient
-            else:
+            if not self.meancurve:
                 grad_cost = np.zeros((self.nn, theta.size))
 
         # Expand event rates to event-location rates
@@ -320,9 +318,11 @@ class RateAdjustment:
 
         # Calculate gradient of cost function wrt to event rates
         if not self.unc or self.meancurve:
+            dg_all = np.empty(self.m)
             for a, b in self.loc_slicers:
-                dg = 2*(deltas[a:b]*dwts[a:b])[::-1].cumsum()[::-1]
-                grad_cost[self.loceventixs[a:b]] += dg * self.locratewts[a:b]
+                dg_all[a:b] = 2*(deltas[a:b]*dwts[a:b])[::-1].cumsum()[::-1]
+            grad_cost = np.bincount(self.loceventixs, weights=dg_all,
+                                    minlength=self.nevents) * self.locratewts
         else:
             # Only for non-mean curve uncertainty calculations
             for a, b in self.loc_slicers:

@@ -66,7 +66,7 @@ def adam(fun, theta0, args, alpha=1e-3, beta1=0.9, beta2=0.999, nepochs=100,
 
     pbar = tqdm(range(nepochs))
     for i in pbar:
-        fs[i], grad, deltas, _ = fun(x, *(args+(None, ks[i],)))
+        fs[i], grad, deltas, _ = fun(x, *(args+(ks[i],)))
 
         # Convergence checks
         if i >= 1:
@@ -93,7 +93,7 @@ def adam(fun, theta0, args, alpha=1e-3, beta1=0.9, beta2=0.999, nepochs=100,
         # Bound values
         x = np.clip(x, amin, amax)
 
-    f, grad, deltas, eefs_pred = fun(x, *(args+(None, ks[i],)))
+    f, grad, deltas, eefs_pred = fun(x, *(args+(ks[i],)))
     print('Iteration limit reached before cost function within tolerance')
     return dict(theta=x, fun=f, jac=grad, nit=i, deltas=deltas, annealing=ks,
                 fs=fs[fs>0], eefs_pred=eefs_pred)
