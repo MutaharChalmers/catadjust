@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import scipy.special as ss
 from tqdm.auto import tqdm
+from warnings import warn
 from .optimisers import adam
 
 
@@ -85,9 +86,9 @@ class RateAdjustment:
         self.refcol = refcol
         self.locratewtcol = locratewtcol
 
-    def adjust(self, target, theta0=None, orig=True, nepochs=100, ftol=1e-3,
-               alpha=1e-3, beta1=0.9, beta2=0.999, relative=True, mirror=True,
-               adj_bnds=(1e-99, 1e99), wts=None):
+    def adjust(self, target, theta0=None, nepochs=100, ftol=1e-3, alpha=1e-3,
+               beta1=0.9, beta2=0.999, relative=True, mirror=True,
+               adj_bnds=(1e-99, 1e99), wts=None, loc_err_warn=True):
         """Adjust rates to match location-level loss or hazard EEF curves.
 
         Parameters
@@ -98,9 +99,6 @@ class RateAdjustment:
             index must be exactly the same ones as in the ELT/EHT.
         theta0 : Series or ndarray, optional
             Initial guess to use for rate adjustment.
-        orig : bool, optional
-            Use original rates as initial values for adjustment optimisation.
-            Defaults to True.
         nepochs : int, optional
             Number of training epochs. Defaults to 100.
         ftol : float, optional
@@ -123,6 +121,10 @@ class RateAdjustment:
         wts : DataFrame, optional
             Weights to apply to each location-EEF. Array with the same shape
             as targ. By default, locations are equally weighted.
+        loc_err_warn : bool, optional
+            If True (default), only warn about mismatches between locations in
+            target and ELT/EHT, and only adjust locations in both. If False,
+            raise an error.
 
         Returns
         -------
@@ -142,15 +144,23 @@ class RateAdjustment:
             locs_elt_not_targ = list(set(self.locmap).difference(target.index))
             locs_targ_not_elt = list(target.index.difference(self.locmap))
             if len(locs_elt_not_targ) > 0:
-                raise ValueError('ELT/EHT locations missing in target: '
-                                 f'{locs_elt_not_targ}')
+                if loc_err_warn:
+                    warn('ELT/EHT locations missing in target; they will be '
+                        f'ignored: {locs_elt_not_targ}')
+                else:
+                    raise ValueError('ELT/EHT locations missing in target: '
+                                    f'{locs_elt_not_targ}')
             if len(locs_targ_not_elt) > 0:
-                raise ValueError('Target locations missing in ELT/EHT: '
-                                 f'{locs_targ_not_elt}')
+                if loc_err_warn:
+                    warn('Target locations missing in ELT/EHT; removing from '
+                        f'target: {locs_targ_not_elt}')
+                else:
+                    raise ValueError('Target locations missing in ELT/EHT: '
+                                    f'{locs_targ_not_elt}')
         
         # Extract numpy arrays from input targ DataFrame
         eefs = target.columns.to_numpy()
-        targ = target.reindex(self._locmap.index).to_numpy()
+        targ = target.reindex(self._locmap.index, fill_value=-np.inf).to_numpy()
         
         # Check that targ is increasing along axis 1
         if (targ[:,:-1] > targ[:,1:]).any() or (eefs[:-1] < eefs[1:]).any():
@@ -158,31 +168,9 @@ class RateAdjustment:
                              'along axis 1')
 
         # Interpolate input target EEFs to all rows of ELT/EHT
-        eefs_targ = np.concatenate([np.interp(x[self.refcol], targ[i], eefs)
-                                    for i, x in self.elt.groupby('_locid')])
-
-        # Initial guess for adjusted rates based on mean location rate by event
-        if theta0 is None and orig:
-            theta0 = self.rates_orig
-        elif theta0 is None:
-            eefs_targ_by_loc = np.split(eefs_targ, self.loc_slicers[1:,0])
-            rates_targ_by_loc = []
-            for eefs_targ_loc in eefs_targ_by_loc:
-                # Take differences between successive EEFs to estimate rates
-                # diff on length-n array gives n-1 values so prepend first rate
-                rates_targ_loc = np.r_[eefs_targ_loc[0], np.diff(eefs_targ_loc)]
-                rates_targ_by_loc.append(rates_targ_loc)
-            rates_targ_by_loc = np.concatenate(rates_targ_by_loc)
-            rtl = pd.DataFrame({self.eventcol: self.elt[self.eventcol].values,
-                                'num': rates_targ_by_loc,
-                                'den': self.locratewts})
-            numden = rtl.groupby(self.eventcol)[['num','den']].sum()
-            theta0 = numden['num']/numden['den']
-        elif isinstance(theta0, pd.Series):
-            theta0 = theta0.reindex(self.eventIDs)
-            if theta0.isna().any():
-                raise ValueError('theta0 missing events in the ELT/EHT')
-        self.theta0 = np.array(theta0)
+        eefs_targ = [np.interp(x[self.refcol], targ[i], eefs, right=1e-99)
+                     for i, x in self.elt.groupby('_locid')]
+        eefs_targ = np.concatenate(eefs_targ)
 
         # Default weights are uniform
         if wts is None:
@@ -198,6 +186,19 @@ class RateAdjustment:
                for i, x in self.elt.groupby('_locid')]
         wts = np.concatenate(wts)
         self.wts = np.array(wts, dtype=np.float64)/np.sum(wts)
+
+        # Initial values are the original rates unless specified
+        if theta0 is None:
+            theta0 = self.rates_orig
+        else:
+            if isinstance(theta0, pd.Series):
+                theta0 = theta0.reindex(self.eventIDs)
+                if theta0.isna().any():
+                    raise ValueError('theta0 missing events in the ELT/EHT')
+            else:
+                warn('theta0 should be passed as a Series indexed by eventID '
+                     'to eliminate ordering errors')
+        self.theta0 = np.array(theta0)
 
         # Create dict to pass arguments for the optimiser
         opt_args = {'alpha': alpha, 'beta1': beta1, 'beta2': beta2,
@@ -215,17 +216,21 @@ class RateAdjustment:
         res['rates'] = rates
 
         # Calculate weighted cost over hazard curves by location
-        sse = np.add.reduceat(wts*res['deltas']**2, self.loc_slicers[:,0])
-        swt = np.add.reduceat(wts, self.loc_slicers[:,0])
-        res['loc_mse'] = pd.Series(sse/swt, index=pd.Index(self.locations))
+        lix = pd.Index(self.locations, name='location')
+        mse, mse0 = np.full((2, self.locations.size), np.nan)
+        swts = np.add.reduceat(self.wts, self.loc_slicers[:,0])
+        nz = np.nonzero(swts)
+        sse = np.add.reduceat(self.wts*res['deltas']**2, self.loc_slicers[:,0])
+        mse[nz] = sse[nz]/swts[nz]
+        res['loc_mse'] = pd.Series(mse, index=lix, name='loc_mse')
 
         if relative:
-            deltas_orig = eefs_targ/self.elt['eef'].values - 1
+            deltas0 = eefs_targ/self.elt['eef'].values - 1
         else:
-            deltas_orig = eefs_targ - self.elt['eef'].values
-        sse_orig = np.add.reduceat(wts*deltas_orig**2, self.loc_slicers[:,0])
-        res['loc_mse_orig'] = pd.Series(sse_orig/swt,
-                                        index=pd.Index(self.locations))
+            deltas0 = eefs_targ - self.elt['eef'].values
+        sse0 = np.add.reduceat(self.wts*deltas0**2, self.loc_slicers[:,0])
+        mse0[nz] = sse0[nz]/swts[nz]
+        res['loc_mse0'] = pd.Series(mse0, index=lix, name='loc_mse0')
 
         # Remove the unused annealing key-value
         res.pop('annealing')   
