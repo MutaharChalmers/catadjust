@@ -137,6 +137,9 @@ class RateAdjustment:
         # Input validation
         if not isinstance(target, pd.DataFrame):
             raise TypeError('target must be DataFrame')
+
+        # Cast target index to string
+        target.index = target.index.astype(str)
     
         # Check that each location in the ELT/EHT corresponds to a row in target
         missing_targ_locs = set(self.locmap).symmetric_difference(target.index)
@@ -177,6 +180,7 @@ class RateAdjustment:
             wts = np.ones_like(targ)
         else:
             if isinstance(wts, pd.DataFrame):
+                wts.index = wts.index.astype(str)
                 wts = wts.reindex(self._locmap.index).to_numpy()
             else:
                 raise TypeError('wts must be a DataFrame')
