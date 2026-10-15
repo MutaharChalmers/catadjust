@@ -94,9 +94,10 @@ class RateAdjustment:
         Parameters
         ----------
         target : DataFrame
-            Target hazard or losses in an (m locations, n target EEFs) DataFrame
-            with EEFs as columns and locations the index. The locations in the
-            index must be exactly the same ones as in the ELT/EHT.
+            Target hazard or losses in an (m locations, n targets) DataFrame
+            indexed by location, with target hazard or losses as the columns.
+            If the locations in the index differ from the ELT/EHT, a warning
+            will be raised.
         theta0 : Series or ndarray, optional
             Initial guess to use for rate adjustment.
         nepochs : int, optional
@@ -160,24 +161,29 @@ class RateAdjustment:
                 else:
                     raise ValueError('Target locations missing in ELT/EHT: '
                                     f'{locs_targ_not_elt}')
+
+        # Satisfied location input validation
+        target = target.reindex(self._locmap.index, fill_value=-np.inf) # INF?
         
-        # Extract numpy arrays from input targ DataFrame
-        eefs = target.columns.to_numpy()
-        targ = target.reindex(self._locmap.index, fill_value=-np.inf).to_numpy()
+        # Extract numpy arrays from input target DataFrame
+        targ_vals = target.columns.to_numpy()
+        targ_eefs = target.to_numpy()
         
-        # Check that targ is increasing along axis 1
-        if (targ[:,:-1] > targ[:,1:]).any() or (eefs[:-1] < eefs[1:]).any():
-            raise ValueError('targ values/columns must increase/decrease '
-                             'along axis 1')
+        # Check that targ_vals increases, and targ_eefs decreases along axis 1
+        if (targ_vals[:-1] > targ_vals[1:]).any():
+            raise ValueError('target values must be increasing')
+        if (targ_eefs[:,:-1] < targ_eefs[:,1:]).any():
+            raise ValueError('target EEFs must be decreasin along axis 1')
 
         # Interpolate input target EEFs to all rows of ELT/EHT
-        eefs_targ = [np.interp(x[self.refcol], targ[i], eefs, right=1e-99)
+        eefs_targ = [np.interp(x[self.refcol], targ_vals, targ_eefs[i],
+                               right=1e-99)
                      for i, x in self.elt.groupby('_locid')]
         eefs_targ = np.concatenate(eefs_targ)
 
         # Default weights are uniform
         if wts is None:
-            wts = np.ones_like(targ)
+            wts = np.ones_like(target)
         else:
             if isinstance(wts, pd.DataFrame):
                 wts.index = wts.index.astype(str)
@@ -186,7 +192,7 @@ class RateAdjustment:
                 raise TypeError('wts must be a DataFrame')
 
         # Interpolate wts into ELT/EHT wrt hazard/loss
-        wts = [np.interp(x[self.refcol], targ[i], wts[i], left=0, right=0)
+        wts = [np.interp(x[self.refcol], targ_vals, wts[i], left=0, right=0)
                for i, x in self.elt.groupby('_locid')]
         wts = np.concatenate(wts)
         self.wts = np.array(wts, dtype=np.float64)/np.sum(wts)
