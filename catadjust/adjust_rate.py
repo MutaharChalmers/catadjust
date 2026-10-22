@@ -86,6 +86,9 @@ class RateAdjustment:
         self.refcol = refcol
         self.locratewtcol = locratewtcol
 
+        # Track mismatched locations between ELT/EHT and target
+        self.mismatched_locs = {}
+
     def adjust(self, target, theta0=None, nepochs=100, ftol=1e-3, alpha=1e-3,
                beta1=0.9, beta2=0.999, relative=True, mirror=True,
                adj_bnds=(1e-99, 1e99), wts=None, loc_err_warn=True):
@@ -142,42 +145,43 @@ class RateAdjustment:
         # Cast target index to string
         target.index = target.index.astype(str)
     
-        # Check that each location in the ELT/EHT corresponds to a row in target
+        # Check each location in the ELT/EHT corresponds to a row in target
         missing_targ_locs = set(self.locmap).symmetric_difference(target.index)
         if len(missing_targ_locs) > 0:
-            locs_elt_not_targ = list(set(self.locmap).difference(target.index))
-            locs_targ_not_elt = list(target.index.difference(self.locmap))
-            if len(locs_elt_not_targ) > 0:
+            elt_not_targ = list(set(self.locmap).difference(target.index))
+            targ_not_elt = list(target.index.difference(self.locmap))
+            if len(elt_not_targ) > 0:
+                self.mismatched_locs['elt_not_targ'] = elt_not_targ
                 if loc_err_warn:
-                    warn('ELT/EHT locations missing in target; they will be '
-                        f'ignored: {locs_elt_not_targ}')
+                    warn(f'{len(elt_not_targ)} ELT/EHT locations missing'
+                         ' in target; they will be ignored')
                 else:
-                    raise ValueError('ELT/EHT locations missing in target: '
-                                    f'{locs_elt_not_targ}')
-            if len(locs_targ_not_elt) > 0:
+                    raise ValueError(f'{len(elt_not_targ)} ELT/EHT locations'
+                                     ' missing in target')
+            if len(targ_not_elt) > 0:
+                self.mismatched_locs['targ_not_elt'] = targ_not_elt
                 if loc_err_warn:
-                    warn('Target locations missing in ELT/EHT; removing from '
-                        f'target: {locs_targ_not_elt}')
+                    warn(f'{len(targ_not_elt)} target locations missing in'
+                         ' ELT/EHT; removing from target')
                 else:
-                    raise ValueError('Target locations missing in ELT/EHT: '
-                                    f'{locs_targ_not_elt}')
+                    raise ValueError(f'{len(targ_not_elt)} target locations'
+                                     ' missing in ELT/EHT')
 
         # Satisfied location input validation
         target = target.reindex(self._locmap.index, fill_value=-np.inf) # INF?
         
         # Extract numpy arrays from input target DataFrame
-        targ_vals = target.columns.to_numpy()
-        targ_eefs = target.to_numpy()
+        targvals = target.columns.to_numpy()
+        targeefs = target.to_numpy()
         
         # Check that targ_vals increases, and targ_eefs decreases along axis 1
-        if (targ_vals[:-1] > targ_vals[1:]).any():
-            raise ValueError('target values must be increasing')
-        if (targ_eefs[:,:-1] < targ_eefs[:,1:]).any():
-            raise ValueError('target EEFs must be decreasin along axis 1')
+        if (targvals[:-1] >= targvals[1:]).any():
+            raise ValueError('target values must be strictly increasing')
+        if (targeefs[:,:-1] < targeefs[:,1:]).any():
+            raise ValueError('target EEFs must be decreasing along axis 1')
 
         # Interpolate input target EEFs to all rows of ELT/EHT
-        eefs_targ = [np.interp(x[self.refcol], targ_vals, targ_eefs[i],
-                               right=1e-99)
+        eefs_targ = [np.interp(x[self.refcol], targvals, targeefs[i])
                      for i, x in self.elt.groupby('_locid')]
         eefs_targ = np.concatenate(eefs_targ)
 
@@ -191,8 +195,8 @@ class RateAdjustment:
             else:
                 raise TypeError('wts must be a DataFrame')
 
-        # Interpolate wts into ELT/EHT wrt hazard/loss
-        wts = [np.interp(x[self.refcol], targ_vals, wts[i], left=0, right=0)
+        # Interpolate wts into EHT/ELT wrt hazard/loss
+        wts = [np.interp(x[self.refcol], targvals, wts[i], left=0, right=0)
                for i, x in self.elt.groupby('_locid')]
         wts = np.concatenate(wts)
         self.wts = np.array(wts, dtype=np.float64)/np.sum(wts)
