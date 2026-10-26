@@ -184,24 +184,15 @@ class RateAdjustment:
         eefs_targ = np.concatenate(eefs_targ)
 
         # To prevent divide by zero errors in relative cost function
-        eefs_targ = np.where(eefs_targ==0, -1, eefs_targ)
+        eefs_targ = np.where(eefs_targ<=0, -1, eefs_targ)
 
         # Uniform weights, ignoring extrapolated targets at high hazard/loss
-        wts0a = np.where(target>0, np.ones_like(target), 0)
+        wts0 = np.where(target>0, np.ones_like(target), 0)
 
         # Ignore extrapolated targets at low hazard/loss
-        r_nz, c_nz = np.nonzero(target.diff(axis=1).bfill(axis=1))
-        first_nz = c_nz[np.r_[0, np.bincount(r_nz)[:-1]].cumsum()][:,None]
-        wts0a = np.where(np.arange(targvals.size)<first_nz, 0, wts0a)
-
-        # Handle data bounds
-        wts0b = pd.DataFrame({loc: np.interp(targvals, x[self.refcol][::-1],
-                                             np.ones(len(x)), left=0, right=0)
-                              for loc, x in self.elt.groupby(self.loccol)},
-                              index=targvals).T
-
-        # Combine weights
-        wts0 = wts0a * wts0b.reindex(self._locmap.index, fill_value=0).values
+        nz = target.diff(axis=1).bfill(axis=1).to_numpy() != 0
+        nz0 = np.where(nz.any(axis=1), nz.argmax(axis=1), targvals.size)[:,None]
+        wts0 = np.where(np.arange(targvals.size) < nz0, 0, wts0)
         self.wts0 = wts0
 
         if wts is None:
