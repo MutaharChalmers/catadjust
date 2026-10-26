@@ -86,9 +86,6 @@ class RateAdjustment:
         self.refcol = refcol
         self.locratewtcol = locratewtcol
 
-        # Track mismatched locations between ELT/EHT and target
-        self.mismatched_locs = {}
-
     def adjust(self, target, theta0=None, nepochs=100, ftol=1e-3, alpha=1e-3,
                beta1=0.9, beta2=0.999, relative=True, mirror=True,
                adj_bnds=(1e-99, 1e99), wts=None, loc_err_warn=True):
@@ -146,6 +143,7 @@ class RateAdjustment:
         target.index = target.index.astype(str)
     
         # Check each location in the ELT/EHT corresponds to a row in target
+        self.mismatched_locs = {}
         missing_targ_locs = set(self.locmap).symmetric_difference(target.index)
         if len(missing_targ_locs) > 0:
             elt_not_targ = list(set(self.locmap).difference(target.index))
@@ -168,7 +166,7 @@ class RateAdjustment:
                                      ' missing in ELT/EHT')
 
         # Satisfied location input validation
-        target = target.reindex(self._locmap.index, fill_value=-np.inf) # INF?
+        target = target.reindex(self._locmap.index, fill_value=-np.inf)
         
         # Extract numpy arrays from input target DataFrame
         targvals = target.columns.to_numpy()
@@ -185,13 +183,34 @@ class RateAdjustment:
                      for i, x in self.elt.groupby('_locid')]
         eefs_targ = np.concatenate(eefs_targ)
 
-        # Default weights are uniform
+        # To prevent divide by zero errors in relative cost function
+        eefs_targ = np.where(eefs_targ==0, -1, eefs_targ)
+
+        # Uniform weights, ignoring extrapolated targets at high hazard/loss
+        wts0a = np.where(target>0, np.ones_like(target), 0)
+
+        # Ignore extrapolated targets at low hazard/loss
+        r_nz, c_nz = np.nonzero(target.diff(axis=1).bfill(axis=1))
+        first_nz = c_nz[np.r_[0, np.bincount(r_nz)[:-1]].cumsum()][:,None]
+        wts0a = np.where(np.arange(targvals.size)<first_nz, 0, wts0a)
+
+        # Handle data bounds
+        wts0b = pd.DataFrame({loc: np.interp(targvals, x[self.refcol][::-1],
+                                             np.ones(len(x)), left=0, right=0)
+                              for loc, x in self.elt.groupby(self.loccol)},
+                              index=targvals).T
+
+        # Combine weights
+        wts0 = wts0a * wts0b.reindex(self._locmap.index, fill_value=0).values
+        self.wts0 = wts0
+
         if wts is None:
-            wts = np.ones_like(target)
+            wts = wts0
         else:
             if isinstance(wts, pd.DataFrame):
                 wts.index = wts.index.astype(str)
-                wts = wts.reindex(self._locmap.index).to_numpy()
+                wts = wts.reindex(self._locmap.index,
+                                  fill_value=0).to_numpy() * wts0
             else:
                 raise TypeError('wts must be a DataFrame')
 
@@ -239,9 +258,9 @@ class RateAdjustment:
         res['loc_mse'] = pd.Series(mse, index=lix, name='loc_mse')
 
         if relative:
-            deltas0 = eefs_targ/self.elt['eef'].values - 1
+            deltas0 = self.elt['eef'].values/eefs_targ - 1
         else:
-            deltas0 = eefs_targ - self.elt['eef'].values
+            deltas0 = self.elt['eef'].values - eefs_targ
         sse0 = np.add.reduceat(self.wts*deltas0**2, self.loc_slicers[:,0])
         mse0[nz] = sse0[nz]/swts[nz]
         res['loc_mse0'] = pd.Series(mse0, index=lix, name='loc_mse0')
