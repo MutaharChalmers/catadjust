@@ -261,11 +261,12 @@ class RateAdjustment:
 
         # Create adjusted ELT/EHT DataFrame
         elt_adj = self.elt.drop('_rate', axis=1)
-        elt_adj[self.ratecol] = rates.values[self.loceventixs] * self.locratewts
+        elt_adj[self.ratecol] = rates.values[self.loceventixs]
+        elt_adj['rate_loc'] = elt_adj[self.ratecol] * self.locratewts
         elt_adj['eef'] = elt_adj.groupby('_locid', sort=False
-                                         )[self.ratecol].transform('cumsum')
+                                         )['rate_loc'].transform('cumsum')
         elt_adj['rp'] = 1/(1-np.exp(-elt_adj['eef']))
-        elt_adj['eef_targ'] = eefs_targ
+        elt_adj['eef_targ'] = eefs_targ.clip(0, np.inf)
         elt_adj['deltas'] = res['deltas']
         elt_adj['wts'] = self.wts
 
@@ -306,26 +307,20 @@ class RateAdjustment:
             Predicted EEFs.
         """
 
-        # Initialise variables
-        if not self.unc:
-            eefs_pred = np.empty(self.m)
-        else:
-            eefs_node = np.empty((self.nn, self.m))
-            eefs_pred = np.empty((self.nn, self.m))
-
-            # Optimising E[cost(.)] - track multiple 'realisations' of gradient
-            if not self.meancurve:
-                grad_cost = np.zeros((self.nn, theta.size))
-
         # Expand event rates to event-location rates
         rates = theta[self.loceventixs] * self.locratewts
 
         # Calculate predicted EEFs for each location without uncertainty
         if not self.unc:
+            eefs_pred = np.empty(self.m)
+
             for a, b in self.loc_slicers:
                 eefs_pred[a:b] = rates[a:b].cumsum()
         # Calculate EEFs for each location with uncertainty
         else:
+            eefs_node = np.empty((self.nn, self.m))
+            eefs_pred = np.empty((self.nn, self.m))
+
             for a, b in self.loc_slicers:
                 eefs_node[:,a:b] = rates[a:b][self.sorter[:,a:b]].cumsum(axis=1)
                 eefs_pred[:,a:b] = np.take_along_axis(eefs_node[:,a:b], 
@@ -353,7 +348,9 @@ class RateAdjustment:
             grad_cost = np.bincount(self.loceventixs, minlength=self.nevents,
                                     weights=dg_all*self.locratewts)
         else:
-            # Only for non-mean curve uncertainty calculations
+            # Optimise E[cost(.)] - track multiple 'realisations' of gradient
+            grad_cost = np.zeros((self.nn, theta.size))
+
             for a, b in self.loc_slicers:
                 dg = 2*(deltas[:,a:b]*dwts[a:b])[:,::-1].cumsum(axis=1)[:,::-1]
                 grad_cost[:,self.loceventixs[a:b]] += dg * self.locratewts[a:b]
